@@ -1,0 +1,10 @@
+# Rotate Goodix touchscreen 90 deg clockwise to match the rotated display.
+# Matrix encodes 90 CW: (x,y) -> (y, 1-x). libinput format is the first 6
+# values of a 3x3 affine matrix, row-major.
+ACTION=="add|change", KERNEL=="event[0-9]*", \
+    ATTRS{name}=="Goodix Capacitive TouchScreen", \
+    ENV{LIBINPUT_CALIBRATION_MATRIX}="0 1 0 -1 0 1"
+
+# Backlight: chmod so the 'video' group can write brightness without sudo.
+SUBSYSTEM=="backlight", ACTION=="add|change", \
+    RUN+="/bin/sh -c 'chgrp video /sys/class/backlight/%k/brightness && chmod g+w /sys/class/backlight/%k/brightness'"

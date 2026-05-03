@@ -1,0 +1,44 @@
+# MPD config template for the clock radio.
+# Copy to /etc/mpd.conf and edit the audio_output stanza for your USB DAC.
+#
+# Find your USB DAC's card name and mixer:
+#     aplay -l                          # lists card names
+#     amixer -c <name> scontrols        # lists mixer controls
+#
+# The Pi 3's onboard 3.5 mm jack is unusable on this build (clicks, no
+# audible audio) — always use a USB DAC or a HAT.
+
+music_directory     "/var/lib/mpd/music"
+playlist_directory  "/var/lib/mpd/playlists"
+db_file             "/var/lib/mpd/tag_cache"
+log_file            "/var/log/mpd/mpd.log"
+pid_file            "/run/mpd/pid"
+state_file          "/var/lib/mpd/state"
+sticker_file        "/var/lib/mpd/sticker.sql"
+
+user                "mpd"
+
+bind_to_address     "127.0.0.1"
+port                "6600"
+
+audio_output {
+    type            "alsa"
+    name            "Clockradio Output"
+    # Reference the card BY NAME in BOTH device and mixer_device so a
+    # HAT swap, a different USB port, or kernel card-renumbering doesn't
+    # silently break audio. Numbered forms like "hw:2" point at whichever
+    # card happens to be 2nd this boot — often HDMI — and the mixer call
+    # then fails with "no such mixer control: Speaker" while MPD still
+    # claims to be playing. Symptom: silent radio after a reboot.
+    device          "hw:CARD=Device,DEV=0"
+    # hardware mixer preserves dynamic range on lossy streams; software
+    # mixer chews it up.
+    mixer_type      "hardware"
+    mixer_device    "hw:CARD=Device"
+    mixer_control   "Speaker"
+    mixer_index     "0"
+}
+
+input {
+    plugin          "curl"
+}

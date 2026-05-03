@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.idea/
+.vscode/
+
+# Editor scratch
+*.swp
+*~
+
+# Runtime data — lives at /var/lib/clockradio on the device
+alarms.json
+stations.json
+
+# Map source assets — only the rendered PNGs in app/data/world_*.png are committed
+app/data/*.geojson
+app/data/SR_50M.zip
+app/data/lights_orig.jpg
+
+# Local framebuffer captures and scratch
+tmp/
+fb_*.png
