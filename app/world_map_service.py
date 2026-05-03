@@ -89,6 +89,12 @@ class MapStyle:
     # circles, equator, and the day/night terminator. None = fall back
     # to the graticule colour or a softened version of `coast`.
     annotation_color: RGB | None = None
+    # Day-side brightness lift — multiplicative gain applied where the
+    # sun is up so the lit hemisphere reads as actual daytime rather
+    # than a slightly-less-dark version of the night side. 0 = no lift,
+    # 0.20 ≈ "noon glare" peak. Falls off through the twilight band the
+    # same way `day` does, so the boost dies smoothly at the terminator.
+    day_lift: float = 0.0
 
 
 SLATE = MapStyle(
@@ -109,6 +115,7 @@ SLATE = MapStyle(
     river_color=(95, 130, 175),
     border_color=(35, 50, 80),
     border_alpha=0.55,
+    day_lift=0.22,
 )
 
 ATLAS = MapStyle(
@@ -130,6 +137,7 @@ ATLAS = MapStyle(
     river_color=(80, 130, 180),
     border_color=(50, 35, 25),
     border_alpha=0.55,
+    day_lift=0.20,
 )
 
 VINTAGE = MapStyle(
@@ -151,6 +159,7 @@ VINTAGE = MapStyle(
     river_color=(125, 100, 70),
     border_color=(55, 35, 20),
     border_alpha=0.50,
+    day_lift=0.18,
 )
 
 BLUEPRINT = MapStyle(
@@ -172,6 +181,7 @@ BLUEPRINT = MapStyle(
     river_color=(140, 195, 235),
     border_color=(70, 110, 160),
     border_alpha=0.45,
+    day_lift=0.16,
 )
 
 
@@ -578,6 +588,15 @@ class WorldMapService:
         # Blend toward bg by the (1-weight) factor.
         delta = base - bg[None, None, :]
         rgb = bg[None, None, :] + delta * weight[..., None]
+
+        # Day-side brightness lift. Multiplicative gain that scales
+        # with `day` (0 at night, 1 at noon) so the lit hemisphere
+        # actually reads as daytime — the night side and the bg fade
+        # are untouched, and the boost dies smoothly through the
+        # twilight band. Clip after to avoid uint8 wrap.
+        if style.day_lift > 0:
+            factor = 1.0 + style.day_lift * day[..., None]
+            rgb = rgb * factor
 
         # City lights: NASA Black Marble, additive over night side.
         # weight ~ 1 on day (no lights), low on night (full lights).

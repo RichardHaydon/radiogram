@@ -94,10 +94,14 @@ FRAME_RATE = 5
 FADE_DURATION_S = 1.0
 ROTATION_CCW = 90  # CCW canvas → fb. Inverse used for touch hit-test.
 
-# Gesture threshold (panel pixels). Movement above this = drag → discarded.
-# Swipes are no longer classified (the launcher opens via tap-on-idle, not
-# a swipe-up edge gesture), so anything that's not a clean tap is dropped.
+# Gesture thresholds (panel pixels, except SWIPE_MAX_S in seconds).
+# Tap: release within TAP_MAX_PX of press. Swipe: release at least
+# SWIPE_MIN_PX away within SWIPE_MAX_S — anything in between counts
+# as a slow drag and is discarded so the user doesn't accidentally
+# trigger something while resting a finger.
 TAP_MAX_PX = 30
+SWIPE_MIN_PX = 80
+SWIPE_MAX_S = 0.8
 
 ALARMS_PATH = Path("/var/lib/clockradio/alarms.json")
 STATIONS_PATH = Path("/var/lib/clockradio/stations.json")
@@ -315,13 +319,20 @@ class TouchReader:
                         move = (dx * dx + dy * dy) ** 0.5
                         cx, cy = self.display.panel_to_canvas(
                             self._press_x, self._press_y)
-                        del dt  # swipe-classification removed
                         if move <= TAP_MAX_PX:
                             events.append(TouchEvent("tap", cx, cy))
-                        # Anything that moved beyond TAP_MAX_PX is
-                        # discarded — swipes are no longer used as a
-                        # UI gesture; the launcher opens via empty-area
-                        # tap on idle/radio.
+                        elif move >= SWIPE_MIN_PX and dt <= SWIPE_MAX_S:
+                            end_cx, end_cy = self.display.panel_to_canvas(
+                                self._last_x, self._last_y)
+                            cdx = end_cx - cx
+                            cdy = end_cy - cy
+                            if abs(cdx) > abs(cdy):
+                                direction = "right" if cdx > 0 else "left"
+                            else:
+                                direction = "down" if cdy > 0 else "up"
+                            events.append(TouchEvent(
+                                "swipe", cx, cy, direction))
+                        # else: ambiguous slow drag — discard.
                         self._press_x = self._press_y = None
         return events
 
@@ -372,9 +383,13 @@ class Compositor:
     - A tap on empty area in IdleScene/RadioScene opens the "launcher"
       (Apps) overlay. Buttons inside those scenes still receive their
       own taps unchanged (alarm pill, transport row).
-    - Swipe gestures have been removed — every navigation step is now
-      a single tap on a visible affordance (back arrow at top-left of
-      every overlay, app tile in the launcher).
+    - Swipe-up anywhere on the home screens (idle/radio) also opens
+      the launcher — kept as a low-effort gesture for users who'd
+      rather flick than tap. Blocked while an alarm is firing so a
+      3 a.m. brush can't dismiss the alarm.
+    - All other directions and any swipe over an open overlay are
+      ignored — the back arrow at top-left of every overlay is the
+      single navigation affordance.
     """
 
     # Window during which a second tap is ignored after a button
@@ -523,6 +538,21 @@ class Compositor:
                        * (self.REPEAT_DECAY ** self._repeat_count))
         self._next_repeat_at = now + interval
         self._last_key = None  # force repaint of the bumped value
+
+    def dispatch_swipe(self, direction: str, cx: float, cy: float) -> bool:
+        """Swipe-up on idle/radio opens the Apps launcher. Every other
+        direction is ignored — overlays are dismissed via their
+        back-arrow button only, and we want zero ambiguity over the
+        firing alarm screen."""
+        if direction != "up":
+            return False
+        # Only accept swipe-up on the home screens — over an open
+        # overlay it's almost certainly a fat-finger drag while reading.
+        if self._overlay is not None:
+            return False
+        if self.underlying_scene_name() == "alarm":
+            return False
+        return self.set_overlay("launcher")
 
     def dispatch_tap(self, cx: float, cy: float) -> bool:
         # Lockout swallows queued double-taps. Heavy scenes (e.g. the
@@ -796,9 +826,8 @@ def main() -> int:
                     continue
                 if ev.kind == "tap":
                     compositor.dispatch_tap(ev.cx, ev.cy)
-                # Swipes are no longer dispatched — the launcher and
-                # quick-panel overlays are now reached via tap-on-idle
-                # and the underlying scenes' explicit buttons.
+                elif ev.kind == "swipe":
+                    compositor.dispatch_swipe(ev.direction, ev.cx, ev.cy)
 
             if time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
                 target_b = idle_dim_level()
