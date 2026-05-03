@@ -28,6 +28,7 @@ VALID_MODES = (
     "world_map_atlas",
     "world_map_vintage",
     "world_map_blueprint",
+    "world_map_globe",
 )
 
 # Older configs wrote the bare "world_map" string before styles existed.

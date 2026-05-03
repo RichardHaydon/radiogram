@@ -677,6 +677,13 @@ def main() -> int:
                     center_lon=cl)
             return None
 
+        def style_name(self):
+            # Surface the current map style so scenes can adjust their
+            # layout per-style — e.g. IdleScene tucks the clock into
+            # the top-left when the globe is active so the daylit disc
+            # stays unobstructed.
+            return self._bg.style_name()
+
         def state_key(self):
             style = self._bg.style_name()
             if style is not None:

@@ -23,7 +23,7 @@ from widgets import (
     ColorPairWidget, DateWidget, IconButton, IconRow, LAUNCHER_ICONS,
     Rect, SETTINGS_ICONS, TextWidget, TwoLineText, WeatherIconWidget,
     Widget, WifiStatusWidget, WrappedTextWidget, _icon_back_arrow,
-    _icon_home,
+    _icon_chevron_down, _icon_chevron_up, _icon_home,
 )
 
 
@@ -122,6 +122,24 @@ def _back_button(canvas_w: int, head_h: int, on_press) -> IconButton:
         outline_width=2,
         icon_factor=0.65,
     )
+
+
+def _scene_bg_is_globe(scene: "Scene") -> bool:
+    """True when the scene's background provider is currently rendering
+    the orthographic globe. Used by IdleScene/RadioScene to swap the
+    clock to a top-left alt-layout that doesn't sit over the disc.
+    Returns False if no provider is installed or the provider doesn't
+    expose `style_name()` — i.e. the legacy / no-bg path."""
+    bg = getattr(scene, "_background_provider", None)
+    if bg is None:
+        return False
+    sn = getattr(bg, "style_name", None)
+    if sn is None:
+        return False
+    try:
+        return sn() == "globe"
+    except Exception:
+        return False
 
 
 def _home_button(canvas_w: int, head_h: int, compositor) -> IconButton:
@@ -315,11 +333,24 @@ class IdleScene(Scene):
         # Big clock floating over the map, vertically centred in the
         # body. Halo (set on ClockWidget) keeps it readable over both
         # bright land and dark ocean.
+        # Globe view alt-layout: tuck a smaller clock into the top-left
+        # corner so the daylit hemisphere stays unobstructed. Both
+        # rect/font pairs are precomputed; render() picks one each
+        # frame based on the current background style.
         clock_h = int(canvas_h * 0.50)
-        self.add(ClockWidget(
-            Rect(0, (body_h - clock_h) // 2, canvas_w, clock_h),
-            font_factor=0.60,
-        ))
+        self._clock_rect_default = Rect(
+            0, (body_h - clock_h) // 2, canvas_w, clock_h)
+        self._clock_factor_default = 0.60
+        self._clock_rect_globe = Rect(
+            int(canvas_w * 0.02), int(canvas_h * 0.02),
+            int(canvas_w * 0.34), int(canvas_h * 0.18),
+        )
+        self._clock_factor_globe = 0.78
+        self._clock = ClockWidget(
+            self._clock_rect_default,
+            font_factor=self._clock_factor_default,
+        )
+        self.add(self._clock)
 
         # Alarm pill: tap target spans bell + label so a tap on the
         # bell opens the alarm list too. The Button is added BEFORE
@@ -362,6 +393,21 @@ class IdleScene(Scene):
         self._compositor.set_overlay("launcher")
         return True
 
+    def _apply_clock_layout(self) -> None:
+        # Pick the alt top-left rect when the globe background is
+        # active so the clock doesn't sit over the daylit disc; fall
+        # back to the centred rect for the flat map styles and "none".
+        if _scene_bg_is_globe(self):
+            self._clock.rect = self._clock_rect_globe
+            self._clock.font_factor = self._clock_factor_globe
+        else:
+            self._clock.rect = self._clock_rect_default
+            self._clock.font_factor = self._clock_factor_default
+
+    def render(self) -> Image.Image:
+        self._apply_clock_layout()
+        return super().render()
+
 
 class RadioScene(Scene):
     """Radio-active mode: clock | station + title | PAUSE / STATIONS | vol.
@@ -383,10 +429,21 @@ class RadioScene(Scene):
         np_h = int(usable_h * 0.33)
         action_h = usable_h - clock_h - np_h
 
-        self.add(ClockWidget(
-            Rect(0, 0, canvas_w, clock_h),
-            font_factor=0.78,
-        ))
+        # Globe view shrinks the clock into the top-left corner so the
+        # daylit disc reads cleanly; flat-map styles keep the wide
+        # banner. render() chooses between the two each frame.
+        self._clock_rect_default = Rect(0, 0, canvas_w, clock_h)
+        self._clock_factor_default = 0.78
+        self._clock_rect_globe = Rect(
+            int(canvas_w * 0.02), int(canvas_h * 0.02),
+            int(canvas_w * 0.34), int(canvas_h * 0.18),
+        )
+        self._clock_factor_globe = 0.78
+        self._clock = ClockWidget(
+            self._clock_rect_default,
+            font_factor=self._clock_factor_default,
+        )
+        self.add(self._clock)
 
         def station_line() -> str:
             cur = station_service.current()
@@ -451,6 +508,18 @@ class RadioScene(Scene):
         the same in both home modes (clock & radio)."""
         self._compositor.set_overlay("launcher")
         return True
+
+    def _apply_clock_layout(self) -> None:
+        if _scene_bg_is_globe(self):
+            self._clock.rect = self._clock_rect_globe
+            self._clock.font_factor = self._clock_factor_globe
+        else:
+            self._clock.rect = self._clock_rect_default
+            self._clock.font_factor = self._clock_factor_default
+
+    def render(self) -> Image.Image:
+        self._apply_clock_layout()
+        return super().render()
 
 
 class LauncherScene(Scene):
@@ -1372,7 +1441,12 @@ class WeatherScene(Scene):
 
 
 class StationListScene(Scene):
-    """Overlay: pick a station to play. Tap a row → play + close."""
+    """Overlay: pick a station to play. Tap a row → play + close.
+
+    Long lists page in MAX_ROWS-sized chunks via ▲/▼ buttons in the
+    header right; page indicator (e.g. "2/3") sits just left of them.
+    Page count is hidden when the whole list fits — keeps the header
+    visually quiet for the common short-list case."""
 
     MAX_ROWS = 6
 
@@ -1381,6 +1455,7 @@ class StationListScene(Scene):
         super().__init__(theme, canvas_w, canvas_h)
         self._compositor = compositor
         self._stations = station_service
+        self._page = 0
         head_h = int(canvas_h * 0.14)
         self._head_h = head_h
         self.add(_back_button(
@@ -1388,14 +1463,70 @@ class StationListScene(Scene):
             on_press=lambda: compositor.set_overlay("launcher"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
+        # Title trimmed to leave the right end of the header free for
+        # the page indicator + paging buttons.
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
-                 int(canvas_w * 0.66), head_h),
+                 int(canvas_w * 0.50), head_h),
             text_src="Stations",
             font_factor=0.55,
             color_role="fg_dim",
         ))
+        # Paging affordances. Two square IconButtons anchored to the
+        # right edge with the same gap pattern back/home use on the
+        # left, plus a small page-count text just to their left.
+        btn_h = int(head_h * 0.80)
+        btn_w = btn_h
+        right_pad = int(canvas_w * 0.025)
+        gap = int(canvas_w * 0.012)
+        down_x = canvas_w - right_pad - btn_w
+        up_x = down_x - btn_w - gap
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.58), 0,
+                 up_x - int(canvas_w * 0.58) - gap, head_h),
+            text_src=self._page_label,
+            font_factor=0.40,
+            color_role="fg_dim",
+        ))
+        self.add(IconButton(
+            Rect(up_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_up,
+            icon_drawer=_icon_chevron_up,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
+        ))
+        self.add(IconButton(
+            Rect(down_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_down,
+            icon_drawer=_icon_chevron_down,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
+        ))
         self._row_widgets: list[Widget] = []
+
+    def _max_page(self) -> int:
+        n = len(self._stations.stations)
+        if n <= self.MAX_ROWS:
+            return 0
+        return (n - 1) // self.MAX_ROWS
+
+    def _page_label(self) -> str:
+        n = len(self._stations.stations)
+        if n <= self.MAX_ROWS:
+            return ""
+        total = self._max_page() + 1
+        page = min(self._page, total - 1)
+        return f"{page + 1}/{total}"
+
+    def _page_up(self) -> None:
+        if self._page > 0:
+            self._page -= 1
+
+    def _page_down(self) -> None:
+        if self._page < self._max_page():
+            self._page += 1
 
     def _play_and_close(self, sid: str) -> None:
         # Picking a station drops to the underlying RadioScene (which
@@ -1413,6 +1544,10 @@ class StationListScene(Scene):
                 pass
         self._row_widgets.clear()
         sts = self._stations.stations
+        # Clamp page if the list shrunk under us.
+        max_p = self._max_page()
+        if self._page > max_p:
+            self._page = max_p
         body_top = self._head_h + int(self.canvas_h * 0.02)
         body_h = self.canvas_h - body_top - int(self.canvas_h * 0.02)
         if not sts:
@@ -1426,9 +1561,11 @@ class StationListScene(Scene):
             self.widgets.append(empty)
             self._row_widgets.append(empty)
             return
+        start = self._page * self.MAX_ROWS
+        page_sts = sts[start:start + self.MAX_ROWS]
         cell_h = body_h // self.MAX_ROWS
         cur = self._stations.current_id
-        for i, s in enumerate(sts[:self.MAX_ROWS]):
+        for i, s in enumerate(page_sts):
             mark = "▶ " if s.id == cur else "  "
             label = f"{mark}{s.name or s.url}"
             color_role = "fg_bright" if s.id == cur else "fg_dim"
@@ -1447,6 +1584,7 @@ class StationListScene(Scene):
         return (
             tuple((s.id, s.name) for s in self._stations.stations),
             self._stations.current_id,
+            self._page,
         )
 
     def render(self) -> Image.Image:
@@ -2178,6 +2316,7 @@ class BackgroundScene(Scene):
         ("world_map_atlas", "Atlas"),
         ("world_map_vintage", "Vintage"),
         ("world_map_blueprint", "Blueprint"),
+        ("world_map_globe", "Globe"),
     )
     OVERLAYS = (
         ("city_lights", "City Lights"),

@@ -1343,6 +1343,31 @@ def _icon_back_arrow(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
               fill=col, width=w)
 
 
+def _icon_chevron_up(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Chevron pointing up ("^"). Used as a paging affordance on long
+    list overlays."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h)
+    w = max(3, int(s * 0.12))
+    arm = s * 0.30
+    draw.line([(cx - arm, cy + arm * 0.5), (cx, cy - arm)],
+              fill=col, width=w)
+    draw.line([(cx + arm, cy + arm * 0.5), (cx, cy - arm)],
+              fill=col, width=w)
+
+
+def _icon_chevron_down(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Chevron pointing down — paging counterpart to _icon_chevron_up."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h)
+    w = max(3, int(s * 0.12))
+    arm = s * 0.30
+    draw.line([(cx - arm, cy - arm * 0.5), (cx, cy + arm)],
+              fill=col, width=w)
+    draw.line([(cx + arm, cy - arm * 0.5), (cx, cy + arm)],
+              fill=col, width=w)
+
+
 def _icon_home(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
     """Classic house silhouette — pitched roof + square body + small
     door — drawn from primitives so it doesn't depend on the font's

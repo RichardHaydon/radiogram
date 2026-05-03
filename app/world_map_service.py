@@ -97,6 +97,19 @@ class MapStyle:
     # 0.20 ≈ "noon glare" peak. Falls off through the twilight band the
     # same way `day` does, so the boost dies smoothly at the terminator.
     day_lift: float = 0.0
+    # When True, the renderer dispatches to the orthographic-globe path
+    # instead of the equirectangular world map. Subsolar-centred sphere
+    # in the disc, atmospheric rim + starfield outside.
+    is_globe: bool = False
+    # Globe-only knobs. atmosphere is the cyan rim colour; rim_frac is
+    # the rim's width as a fraction of the disc radius. specular sets
+    # peak ocean sun-glint brightness (added on top of the day fill);
+    # specular_power tightens the glint into a small bright spot at
+    # high values.
+    atmosphere: RGB = (90, 140, 200)
+    rim_frac: float = 0.045
+    specular: float = 70.0
+    specular_power: float = 60.0
 
 
 SLATE = MapStyle(
@@ -187,8 +200,36 @@ BLUEPRINT = MapStyle(
 )
 
 
+GLOBE = MapStyle(
+    name="globe",
+    # Orthographic sphere centred on the subsolar point — what you see
+    # is the daylit hemisphere from a viewpoint at the Sun. Palette is
+    # atlas-like but with a deeper ocean to read against the dark space
+    # backdrop, and a brighter coast so continents pop at the limb.
+    bg=(4, 6, 14),                     # space backdrop
+    ocean=(28, 70, 122),
+    land=(95, 145, 100),
+    coast=(160, 195, 140),
+    night_floor=1.0,                   # disc is fully day-lit by definition
+    desert=(205, 180, 115),
+    mountain=(115, 90, 70),
+    terrain_blend=0.50,
+    ice=None,
+    relief_strength=0.55,
+    river_color=(80, 130, 180),
+    border_color=(50, 35, 25),
+    border_alpha=0.55,
+    day_lift=0.18,
+    is_globe=True,
+    atmosphere=(105, 165, 220),
+    rim_frac=0.045,
+    specular=75.0,
+    specular_power=55.0,
+)
+
+
 STYLES: dict[str, MapStyle] = {
-    s.name: s for s in (SLATE, ATLAS, VINTAGE, BLUEPRINT)
+    s.name: s for s in (SLATE, ATLAS, VINTAGE, BLUEPRINT, GLOBE)
 }
 
 
@@ -328,6 +369,10 @@ class WorldMapService:
         # as float32 in [0,1] so it can multiply into the colour layer.
         # 0.5 is "flat ground"; >0.5 is sun-facing, <0.5 is shadow.
         self._relief = self._load_grayscale(RELIEF_PNG, Image.LANCZOS)
+        # Star field — sparse white pixels for the globe's space backdrop.
+        # Built once at init with a fixed seed so the sky doesn't flicker
+        # between renders. Float32 in [0,1] so it adds cleanly into rgb.
+        self._starfield = self._build_starfield()
         # Optional overlays — each loaded lazily and held as float
         # arrays so the renderer can stack them without re-decoding.
         self._lakes = self._load_binary_mask(LAKES_PNG)
@@ -617,6 +662,13 @@ class WorldMapService:
                 overlays: set[str],
                 center_lon: float = 0.0,
                 *, now: datetime | None = None) -> Image.Image:
+        if style.is_globe:
+            # Globe path is a different projection entirely — share the
+            # masks + solar geometry helpers but build the image with
+            # its own routine. center_lon and overlays are ignored: the
+            # globe is always subsolar-centred and overlays don't make
+            # sense on a daylit hemisphere.
+            return self._render_globe(style, now=now)
         t0 = time.monotonic()
         w, h = self.canvas_w, self.canvas_h
         bg = np.array(style.bg, dtype=np.float32)
@@ -783,6 +835,204 @@ class WorldMapService:
         thread = threading.current_thread().name
         if elapsed_ms > 1500 or thread == "MainThread":
             print(f"map render [{thread}] {style.name} {elapsed_ms:.0f}ms",
+                  file=sys.stderr, flush=True)
+        return img
+
+    # --- globe path ---------------------------------------------------
+
+    def _build_starfield(self) -> np.ndarray:
+        """Sparse starfield for the globe's space backdrop. Fixed seed
+        so consecutive renders show the same sky — a moving starfield
+        would flicker every minute when the cache invalidates. Returns
+        an HxWx3 float32 array of additive star intensities (0 or a
+        small lift per channel)."""
+        rng = np.random.default_rng(0xC10C)
+        h, w = self.canvas_h, self.canvas_w
+        # ~1 star per 800 pixels keeps the sky sparse — a stuffed sky
+        # competes with the globe for attention. Star brightness varies
+        # so the field looks like depth, not a pixel-noise grid.
+        n = max(20, int(h * w / 800))
+        ys = rng.integers(0, h, size=n)
+        xs = rng.integers(0, w, size=n)
+        # Magnitude bias toward dim — most real stars are below the
+        # naked-eye threshold; a few bright ones anchor the eye.
+        mags = rng.beta(2.0, 5.0, size=n).astype(np.float32) * 180.0
+        out = np.zeros((h, w, 3), dtype=np.float32)
+        out[ys, xs, :] = mags[:, None]
+        return out
+
+    def _render_globe(self, style: MapStyle,
+                      *, now: datetime | None = None) -> Image.Image:
+        """Subsolar-centred orthographic projection of the Earth.
+
+        The visible disc is the day-lit hemisphere (terminator coincides
+        with the limb). Limb-darkening + atmospheric rim glow + ocean
+        sun-glint give it a "view from the Sun" satellite feel. Uses the
+        same equirectangular masks as `_render` — sampled by computed
+        (lat, lon) per disc pixel via fancy indexing."""
+        t0 = time.monotonic()
+        w, h = self.canvas_w, self.canvas_h
+        bg = np.array(style.bg, dtype=np.float32)
+        ocean = np.array(style.ocean, dtype=np.float32)
+        land = np.array(style.land, dtype=np.float32)
+        coast = np.array(style.coast, dtype=np.float32)
+
+        decl, sub_lon = _solar_position(now=now)
+        decl_r = math.radians(decl)
+        sub_lon_r = math.radians(sub_lon)
+        cos_d = math.cos(decl_r)
+        sin_d = math.sin(decl_r)
+
+        # Disc geometry. Fit the sphere into the short axis with a
+        # margin so the rim glow has room to bleed out without clipping.
+        margin_frac = 0.07
+        radius = (min(w, h) * 0.5) * (1.0 - margin_frac)
+        cx = w * 0.5
+        cy = h * 0.5
+
+        # Per-pixel normalised disc coords. nx grows east (right), ny
+        # grows north (up — note the y-flip vs image rows). The +0.5
+        # samples pixel centres, which keeps the limb from looking like
+        # a stair-step at low resolutions.
+        ys = (np.arange(h, dtype=np.float32) + 0.5 - cy) / radius
+        xs = (np.arange(w, dtype=np.float32) + 0.5 - cx) / radius
+        ny, nx = np.meshgrid(-ys, xs, indexing="ij")  # ny flipped: up=+
+
+        rho2 = nx * nx + ny * ny
+        inside = rho2 <= 1.0
+        # nz = depth into the screen, 1 at disc centre, 0 at the limb.
+        # Clamp before sqrt — outside-disc pixels would otherwise NaN.
+        nz = np.sqrt(np.maximum(0.0, 1.0 - rho2))
+
+        # Inverse orthographic projection: for each disc pixel, recover
+        # the (lat, lon) on the sphere given the centre at (decl, sub_lon).
+        # Standard formulas with cos(c) = nz, sin(c)*x/ρ = nx, etc.
+        sin_lat = np.clip(nz * sin_d + ny * cos_d, -1.0, 1.0)
+        lat = np.arcsin(sin_lat)
+        lon = sub_lon_r + np.arctan2(nx, nz * cos_d - ny * sin_d)
+
+        # Equirect mask sampling: row from latitude (north→row 0),
+        # column from longitude. Wrap longitude into [0, 2π) before
+        # scaling so the col index lands inside the source array.
+        src_h, src_w = self.canvas_h, self.canvas_w
+        row = ((math.pi * 0.5 - lat) / math.pi * src_h).astype(np.int32)
+        lon_wrap = np.mod(lon + math.pi, 2.0 * math.pi)
+        col = (lon_wrap / (2.0 * math.pi) * src_w).astype(np.int32)
+        np.clip(row, 0, src_h - 1, out=row)
+        np.clip(col, 0, src_w - 1, out=col)
+
+        # Sample land/ocean and build the base colour layer.
+        if self._land_mask is not None:
+            is_land = self._land_mask[row, col]
+        else:
+            is_land = np.zeros((h, w), dtype=bool)
+        base = np.where(
+            is_land[..., None],
+            land[None, None, :],
+            ocean[None, None, :],
+        ).astype(np.float32)
+
+        # Desert + mountain tints — same blend recipe as the equirect
+        # path but sampled per disc pixel.
+        blend = style.terrain_blend
+        if (style.desert is not None
+                and self._desert_alpha is not None):
+            desert_c = np.array(style.desert, dtype=np.float32)
+            a = (self._desert_alpha[row, col] * blend)[..., None]
+            base = base * (1 - a) + desert_c[None, None, :] * a
+        if (style.mountain is not None
+                and self._mountain_alpha is not None):
+            mtn_c = np.array(style.mountain, dtype=np.float32)
+            a = (self._mountain_alpha[row, col] * blend)[..., None]
+            base = base * (1 - a) + mtn_c[None, None, :] * a
+        # Coast on top of land — defines the visible coastline shape
+        # against the ocean blue.
+        if self._coast_mask is not None:
+            is_coast = self._coast_mask[row, col]
+            base = np.where(
+                is_coast[..., None],
+                coast[None, None, :],
+                base,
+            ).astype(np.float32)
+        # Shaded relief: multiply blend on land pixels only.
+        if self._relief is not None and style.relief_strength > 0:
+            rel = self._relief[row, col]
+            factor = (1.0 + style.relief_strength
+                      * (rel * 2.0 - 1.0))[..., None]
+            lit = np.clip(base * factor, 0.0, 255.0)
+            base = np.where(is_land[..., None], lit, base)
+
+        # Day-side lift, scaled by nz (= sin of sun elevation, since
+        # the disc IS the day-lit hemisphere). Drops to zero exactly
+        # at the limb so the limb darkening reads naturally.
+        if style.day_lift > 0:
+            base = base * (1.0 + style.day_lift * nz[..., None])
+
+        # Limb darkening — astronomical specification: brightness ∝
+        # nz^k with k around 0.5–0.7 for an Earth-from-space look.
+        # Real Earth's edge dims because the atmosphere viewed at a
+        # grazing angle scatters more light. We just reuse the same
+        # nz factor since it varies the right way.
+        limb = np.power(np.maximum(nz, 0.0), 0.55)
+        base = base * limb[..., None]
+
+        # Specular ocean glint at the subsolar point — Phong-style spot,
+        # only on ocean pixels so continents don't suddenly turn shiny
+        # at the centre. Tight power keeps it a small bright disc rather
+        # than a wash over the whole hemisphere.
+        if style.specular > 0:
+            glint = (np.power(np.maximum(nz, 0.0), style.specular_power)
+                     * style.specular)
+            ocean_mask = (~is_land) & inside
+            base = np.where(
+                ocean_mask[..., None],
+                base + glint[..., None],
+                base,
+            )
+
+        # Compose: disc pixels take the base colour, outside is space
+        # (bg) plus the static starfield. Stars are masked so they only
+        # appear in space, never on the globe.
+        space = np.broadcast_to(
+            bg[None, None, :], (h, w, 3)).astype(np.float32)
+        outside = ~inside
+        if self._starfield is not None:
+            space = space + self._starfield * outside[..., None]
+        rgb = np.where(inside[..., None], base, space)
+
+        # Atmospheric rim glow — annulus just outside the disc fading
+        # from the atmosphere colour to space. Inner edge sits exactly
+        # at the limb; outer edge `rim_frac` * R further out.
+        rim_outer = 1.0 + style.rim_frac
+        rho = np.sqrt(rho2)
+        if style.rim_frac > 0:
+            t = np.clip((rim_outer - rho) / style.rim_frac, 0.0, 1.0)
+            # Squared falloff makes the rim glow look softer / more
+            # gaseous than a linear ramp.
+            rim_alpha = np.where(
+                (rho >= 1.0) & (rho <= rim_outer),
+                t * t,
+                0.0,
+            )
+            atmosphere = np.array(style.atmosphere, dtype=np.float32)
+            rgb = (rgb * (1.0 - rim_alpha[..., None])
+                   + atmosphere[None, None, :] * rim_alpha[..., None])
+
+        # Inner-edge atmospheric haze — a faint blue lift just inside
+        # the limb. Sells the "you're seeing the atmosphere from the
+        # side" effect that real planet portraits show.
+        haze_band = 0.10
+        haze_t = np.clip((rho - (1.0 - haze_band)) / haze_band, 0.0, 1.0)
+        haze_alpha = np.where(inside, haze_t * 0.25, 0.0)
+        atmosphere = np.array(style.atmosphere, dtype=np.float32)
+        rgb = rgb + atmosphere[None, None, :] * haze_alpha[..., None]
+
+        img = Image.fromarray(
+            np.clip(rgb, 0, 255).astype(np.uint8), "RGB")
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        thread = threading.current_thread().name
+        if elapsed_ms > 1500 or thread == "MainThread":
+            print(f"globe render [{thread}] {elapsed_ms:.0f}ms",
                   file=sys.stderr, flush=True)
         return img
 
