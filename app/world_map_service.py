@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -267,14 +269,47 @@ class WorldMapService:
     # stay visible after normalization. 1.0 = linear.
     TERRAIN_ALPHA_GAMMA = 0.65
 
+    # Background pre-warmer: when the wall-clock is within this many
+    # seconds of the next minute boundary, the warmer renders the
+    # next-minute image so the main thread doesn't take the
+    # rendering hit when the bucket rolls over. 12s lead-time covers
+    # a worst-case ~600ms render with margin even if the warmer was
+    # already mid-cycle when the threshold was crossed.
+    WARMER_LEAD_S = 12.0
+    WARMER_TICK_S = 4.0
+
+    # Internal render scale — fraction of the display canvas at which
+    # the map is computed. Full canvas (1.0) on a Pi 3 takes ~3.7s per
+    # frame; 0.5 cuts that to ~1s with no visible quality loss for a
+    # background image (lines stamp at half-res then upscale through
+    # bilinear, which on a 7" 1280×720 panel reads as soft-edged but
+    # not pixelated).
+    INTERNAL_SCALE = 0.5
+
     def __init__(self, canvas_w: int, canvas_h: int):
-        self.canvas_w = canvas_w
-        self.canvas_h = canvas_h
+        # display_w/h is what callers see; canvas_w/h is the internal
+        # working resolution that all mask loads + numpy ops use. The
+        # final image is upscaled to display size before caching.
+        self.display_w = canvas_w
+        self.display_h = canvas_h
+        self.canvas_w = max(1, int(canvas_w * self.INTERNAL_SCALE))
+        self.canvas_h = max(1, int(canvas_h * self.INTERNAL_SCALE))
         self._cached_bucket: int = -1
         self._cached_style: str = ""
         self._cached_overlays: tuple[str, ...] = ()
         self._cached_center_lon: int = 0
         self._cached_image: Image.Image | None = None
+        # Pre-warm slot: holds the next-minute image computed by the
+        # warmer thread. Promoted into _cached_* on the first
+        # current_image call after the bucket rolls over.
+        self._next_bucket: int = -1
+        self._next_style: str = ""
+        self._next_overlays: tuple[str, ...] = ()
+        self._next_center_lon: int = 0
+        self._next_image: Image.Image | None = None
+        self._cache_lock = threading.Lock()
+        self._warmer_stop = threading.Event()
+        self._warmer_thread: threading.Thread | None = None
         self._land_mask = self._load_binary_mask(LAND_PNG)
         self._coast_mask = self._compute_coast_mask(self._land_mask)
         # Terrain alphas: blurred to soften polygon boundaries, then
@@ -402,11 +437,24 @@ class WorldMapService:
                  | np.roll(ocean, 1, axis=1) | np.roll(ocean, -1, axis=1))
         return land & neigh
 
+    def _upscale(self, img: Image.Image) -> Image.Image:
+        """Resize the half-res internal render up to display size.
+        BILINEAR keeps the cost low (the map is a background, not a
+        photo) and softens jagged lines from low-res stamping into
+        a more cartographic look on a 7" panel."""
+        if (img.width, img.height) == (self.display_w, self.display_h):
+            return img
+        return img.resize((self.display_w, self.display_h),
+                          Image.BILINEAR)
+
     @staticmethod
-    def _bucket_now() -> int:
-        n = datetime.now(timezone.utc)
+    def _bucket_for(n: datetime) -> int:
         return ((n.year * 366 + n.timetuple().tm_yday) * 24
                 + n.hour) * 60 + n.minute
+
+    @classmethod
+    def _bucket_now(cls) -> int:
+        return cls._bucket_for(datetime.now(timezone.utc))
 
     def state_key(self, style_name: str = "slate",
                   overlays: tuple[str, ...] = (),
@@ -425,13 +473,39 @@ class WorldMapService:
         # are intentionally theme-independent.
         del theme
         style = STYLES.get(style_name, SLATE)
-        bucket = self._bucket_now()
+        ovs_key = tuple(overlays)
         cl_key = int(round(center_lon))
-        cache_key = (bucket, style.name, tuple(overlays), cl_key)
-        if (cache_key == (self._cached_bucket, self._cached_style,
-                          self._cached_overlays, self._cached_center_lon)
-                and self._cached_image is not None):
-            return self._cached_image
+        bucket = self._bucket_now()
+        cache_key = (bucket, style.name, ovs_key, cl_key)
+        with self._cache_lock:
+            # Hot path: current bucket already cached.
+            if (cache_key == (self._cached_bucket, self._cached_style,
+                              self._cached_overlays,
+                              self._cached_center_lon)
+                    and self._cached_image is not None):
+                return self._cached_image
+            # Pre-warm hit: the warmer rendered this exact bucket /
+            # style / overlays / lon ahead of time. Promote it into
+            # the main cache slot — that's the bucket-rollover fast
+            # path that keeps the home screen from stuttering when
+            # the user closes settings just after a minute change.
+            if (cache_key == (self._next_bucket, self._next_style,
+                              self._next_overlays,
+                              self._next_center_lon)
+                    and self._next_image is not None):
+                img = self._next_image
+                self._cached_bucket = self._next_bucket
+                self._cached_style = self._next_style
+                self._cached_overlays = self._next_overlays
+                self._cached_center_lon = self._next_center_lon
+                self._cached_image = img
+                self._next_image = None
+                self._next_bucket = -1
+                return img
+            # Cache miss — fall through to a synchronous render below.
+            # Must drop the lock first; _render is expensive and we
+            # don't want to block the warmer. The masks + style data
+            # it reads are immutable after __init__.
         try:
             img = self._render(style, set(overlays), float(center_lon))
         except Exception as exc:
@@ -439,12 +513,106 @@ class WorldMapService:
                   file=sys.stderr, flush=True)
             img = Image.new("RGB", (self.canvas_w, self.canvas_h),
                             color=style.bg)
-        self._cached_bucket = bucket
-        self._cached_style = style.name
-        self._cached_overlays = tuple(overlays)
-        self._cached_center_lon = cl_key
-        self._cached_image = img
+        img = self._upscale(img)
+        with self._cache_lock:
+            self._cached_bucket = bucket
+            self._cached_style = style.name
+            self._cached_overlays = ovs_key
+            self._cached_center_lon = cl_key
+            self._cached_image = img
+            # Style/overlays/lon may have just changed — invalidate
+            # any stale pre-warm so the warmer recomputes against
+            # the new params on its next tick.
+            if (self._next_style != style.name
+                    or self._next_overlays != ovs_key
+                    or self._next_center_lon != cl_key):
+                self._next_image = None
+                self._next_bucket = -1
         return img
+
+    # --- background pre-warmer ---------------------------------------
+
+    def start(self) -> None:
+        """Spawn the daemon thread that pre-renders the next-minute
+        image just before the bucket rolls over. Idempotent."""
+        if self._warmer_thread is not None:
+            return
+        self._warmer_thread = threading.Thread(
+            target=self._warmer_loop, daemon=True, name="map-warmer")
+        self._warmer_thread.start()
+
+    def stop(self) -> None:
+        self._warmer_stop.set()
+        if self._warmer_thread is not None:
+            self._warmer_thread.join(timeout=2.0)
+            self._warmer_thread = None
+
+    def _warmer_loop(self) -> None:
+        while not self._warmer_stop.wait(self.WARMER_TICK_S):
+            try:
+                self._maybe_prewarm()
+            except Exception as exc:
+                print(f"map warmer: {exc}",
+                      file=sys.stderr, flush=True)
+
+    def _maybe_prewarm(self) -> None:
+        """If we're inside the pre-warm window before a minute boundary
+        AND the next-minute slot isn't already filled, render the
+        next-minute image off-thread and stash it.
+
+        The "next bucket" is computed from the wall clock — NOT from
+        _cached_bucket. The cache can lag arbitrarily behind real time
+        (e.g. user sits in settings for 10 minutes; idle scene never
+        runs current_image to advance _cached_bucket). What matters is
+        what the bucket WILL BE when the user next looks at home.
+
+        Reads the params (style/overlays/lon) from the currently-
+        cached image so we follow whatever the user picked last."""
+        now = datetime.now(timezone.utc)
+        # Distance to the next minute boundary, in seconds.
+        seconds_to_next = 60 - now.second
+        if seconds_to_next > self.WARMER_LEAD_S:
+            return
+        # Render for the wall-clock's next minute boundary — this is
+        # the bucket the main thread will ask for once we cross.
+        next_moment = (now + timedelta(seconds=seconds_to_next)
+                       ).replace(microsecond=0)
+        target_bucket = self._bucket_for(next_moment)
+        with self._cache_lock:
+            if self._cached_image is None:
+                return
+            cur_style_name = self._cached_style
+            cur_overlays = self._cached_overlays
+            cur_lon_key = self._cached_center_lon
+            # Already pre-warmed for THIS specific target bucket
+            # against current params? Nothing to do.
+            if (self._next_image is not None
+                    and self._next_bucket == target_bucket
+                    and self._next_style == cur_style_name
+                    and self._next_overlays == cur_overlays
+                    and self._next_center_lon == cur_lon_key):
+                return
+        style = STYLES.get(cur_style_name, SLATE)
+        try:
+            img = self._render(style, set(cur_overlays),
+                               float(cur_lon_key), now=next_moment)
+        except Exception as exc:
+            print(f"map prewarm render failed: {exc}",
+                  file=sys.stderr, flush=True)
+            return
+        img = self._upscale(img)
+        with self._cache_lock:
+            # Only stash if the user-controlled params haven't
+            # changed under us during the render — otherwise we'd
+            # be caching a stale prediction.
+            if (self._cached_style == cur_style_name
+                    and self._cached_overlays == cur_overlays
+                    and self._cached_center_lon == cur_lon_key):
+                self._next_bucket = target_bucket
+                self._next_style = cur_style_name
+                self._next_overlays = cur_overlays
+                self._next_center_lon = cur_lon_key
+                self._next_image = img
 
     def _shift_for(self, center_lon: float) -> int:
         """Column offset to apply to bundled equirectangular masks so a
@@ -467,14 +635,19 @@ class WorldMapService:
 
     def _render(self, style: MapStyle,
                 overlays: set[str],
-                center_lon: float = 0.0) -> Image.Image:
+                center_lon: float = 0.0,
+                *, now: datetime | None = None) -> Image.Image:
+        t0 = time.monotonic()
         w, h = self.canvas_w, self.canvas_h
         bg = np.array(style.bg, dtype=np.float32)
         ocean = np.array(style.ocean, dtype=np.float32)
         land = np.array(style.land, dtype=np.float32)
         coast = np.array(style.coast, dtype=np.float32)
 
-        decl, sub_lon = _solar_position()
+        # `now` is plumbed through so the background warmer can render
+        # for the next-minute moment ahead of time and have the result
+        # cached when the main thread asks for it.
+        decl, sub_lon = _solar_position(now=now)
         elev = _sun_elevation(w, h, decl, sub_lon, center_lon)
         day = _day_mask_from_elev(elev)
 
@@ -622,6 +795,15 @@ class WorldMapService:
         if "annotations" in overlays:
             img = self._stamp_annotations(img, style, decl, sub_lon,
                                           center_lon)
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        # Only log when the render was unusually slow OR ran on the
+        # main thread (where it would surface as visible UI lag).
+        # Silent on the fast warmer path so the journal stays quiet
+        # in steady state.
+        thread = threading.current_thread().name
+        if elapsed_ms > 1500 or thread == "MainThread":
+            print(f"map render [{thread}] {style.name} {elapsed_ms:.0f}ms",
+                  file=sys.stderr, flush=True)
         return img
 
     def _stamp_annotations(self, img: Image.Image, style: MapStyle,

@@ -879,7 +879,8 @@ class Button(Widget):
                  outline_role: str = "outline",
                  outline_width: int = 2,
                  inset: int = 6,
-                 repeatable: bool = False):
+                 repeatable: bool = False,
+                 halo: bool = False):
         super().__init__(rect)
         self._label_src = label_src
         self.on_press = on_press
@@ -901,6 +902,12 @@ class Button(Widget):
         # for this press if any repeat has fired (prevents a final
         # double-bump on lift-off).
         self.repeatable = repeatable
+        # Halo: same luminance-aware glow as TextWidget. Used on the
+        # idle-screen alarm pill where the label sits over a busy
+        # world-map background — fg_dim on the map alone reads as
+        # mush; halo + fg_bright reads cleanly. Only kicks in when
+        # the scene has a real bg image (see TextWidget for details).
+        self.halo = halo
 
     def get_label(self) -> str:
         return (self._label_src() if callable(self._label_src)
@@ -951,6 +958,13 @@ class Button(Widget):
         # Truncate so long labels never spill past the button outline.
         max_w = int((r.w - 2 * i) * 0.92)
         text = fit_text(draw, label, f, max_w)
+        if (self.halo and not pressed
+                and getattr(draw, "_scene_has_bg_image", False)):
+            target = getattr(draw, "_image", None)
+            if target is not None:
+                _draw_centered_with_halo(
+                    target, draw, text, f, r.cx, r.cy, text_col)
+                return
         draw_centered(draw, text, f, r.cx, r.cy, text_col)
 
 
@@ -1326,6 +1340,30 @@ def _icon_back_arrow(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
     draw.line([(cx + arm * 0.5, cy - arm), (cx - arm, cy)],
               fill=col, width=w)
     draw.line([(cx + arm * 0.5, cy + arm), (cx - arm, cy)],
+              fill=col, width=w)
+
+
+def _icon_double_back(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Double chevron ("<<") — "go all the way back to home" affordance.
+    Sits beside the single back-arrow on every overlay header so the
+    user can unwind the whole stack with one tap rather than walking
+    back one level at a time."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h)
+    w = max(3, int(s * 0.12))
+    arm = s * 0.26
+    gap = s * 0.18
+    # Right chevron (closer to centre)
+    rx = cx + gap * 0.5
+    draw.line([(rx + arm * 0.5, cy - arm), (rx - arm, cy)],
+              fill=col, width=w)
+    draw.line([(rx + arm * 0.5, cy + arm), (rx - arm, cy)],
+              fill=col, width=w)
+    # Left chevron (further left — gives the "double" silhouette)
+    lx = cx - gap * 0.5
+    draw.line([(lx + arm * 0.5, cy - arm), (lx - arm, cy)],
+              fill=col, width=w)
+    draw.line([(lx + arm * 0.5, cy + arm), (lx - arm, cy)],
               fill=col, width=w)
 
 

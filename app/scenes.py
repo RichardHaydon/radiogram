@@ -23,6 +23,7 @@ from widgets import (
     ColorPairWidget, DateWidget, IconButton, IconRow, LAUNCHER_ICONS,
     Rect, SETTINGS_ICONS, TextWidget, TwoLineText, WeatherIconWidget,
     Widget, WifiStatusWidget, WrappedTextWidget, _icon_back_arrow,
+    _icon_double_back,
 )
 
 
@@ -120,6 +121,29 @@ def _back_button(canvas_w: int, head_h: int, on_press) -> IconButton:
         color_role="fg_accent",
         outline_width=2,
         icon_factor=0.65,
+    )
+
+
+def _home_button(canvas_w: int, head_h: int, compositor) -> IconButton:
+    """Double-chevron "go to home" button, placed next to the back
+    arrow on every overlay. Always clears all overlays back to the
+    underlying idle/radio scene — a one-tap escape from a deep nav
+    stack (e.g. Settings → Wifi → password keyboard back to clock)."""
+    btn_h = int(head_h * 0.80)
+    btn_w = btn_h
+    # Sit just to the right of the back button. Back is at x=0.025
+    # with width ~btn_w; this one starts at x=0.025 + btn_w/canvas_w
+    # plus a small gap.
+    back_end = int(canvas_w * 0.025) + btn_w
+    gap = int(canvas_w * 0.012)
+    return IconButton(
+        Rect(back_end + gap, int(head_h * 0.10),
+             btn_w, btn_h),
+        on_press=lambda: compositor.clear_overlay(),
+        icon_drawer=_icon_double_back,
+        color_role="fg_accent",
+        outline_width=2,
+        icon_factor=0.70,
     )
 
 
@@ -301,23 +325,28 @@ class IdleScene(Scene):
         # outline-less / text-only so there's no rectangle to obscure;
         # the centred label also stays well to the right of the bell
         # at this footer width).
-        alarm_w = int(canvas_w * 0.26)
+        alarm_w = int(canvas_w * 0.30)
         foot_y = canvas_h - footer_h
         bell_size = int(footer_h * 0.55)
         bell_x = int(canvas_w * 0.025)
+        # Bigger label + fg_bright + halo so the time reads cleanly
+        # over the world map. The previous fg_dim at 0.40 vanished
+        # against complex coastlines; halo gives it the same
+        # contrast guarantee as the main clock.
         self.add(Button(
             Rect(bell_x, foot_y, alarm_w - bell_x, footer_h),
             label_src=lambda: _format_footer_alarm(alarm_service),
             on_press=lambda: compositor.set_overlay("alarm_list"),
             outline_width=0,
-            color_role="fg_dim",
-            font_factor=0.40,
+            color_role="fg_bright",
+            font_factor=0.52,
+            halo=True,
         ))
         self.add(BellIconWidget(
             Rect(bell_x, foot_y + (footer_h - bell_size) // 2,
                  bell_size, bell_size),
             is_visible_src=lambda: _alarm_armed(alarm_service),
-            color_role="fg_dim",
+            color_role="fg_bright",
         ))
 
         # Transport zones share the rest of the footer width.
@@ -435,9 +464,10 @@ class LauncherScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.clear_overlay(),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Apps",
             font_factor=0.55,
             color_role="fg_dim",
@@ -609,9 +639,10 @@ class SettingsScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("launcher"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Settings",
             font_factor=0.55,
             color_role="fg_dim",
@@ -665,9 +696,10 @@ class ThemeScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Theme",
             font_factor=0.55,
             color_role="fg_dim",
@@ -754,9 +786,10 @@ class WifiScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.42), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.36), head_h),
             text_src="Wifi",
             font_factor=0.55,
             color_role="fg_dim",
@@ -948,8 +981,9 @@ class WifiPasswordScene(Scene):
             cw, head_h,
             on_press=self._cancel,
         ))
+        self.add(_home_button(cw, head_h, self._compositor))
         self.add(TextWidget(
-            Rect(int(cw * 0.14), 0, int(cw * 0.84), head_h),
+            Rect(int(cw * 0.20), 0, int(cw * 0.78), head_h),
             text_src=f"Wifi password — {self._ssid}",
             font_factor=0.50,
             color_role="fg_dim",
@@ -1093,9 +1127,10 @@ class VerseScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("launcher"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.46), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.40), head_h),
             text_src="Verse of the Day",
             font_factor=0.50,
             color_role="fg_dim",
@@ -1173,9 +1208,10 @@ class WeatherScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("launcher"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.40), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.34), head_h),
             text_src="Weather",
             font_factor=0.55,
             color_role="fg_dim",
@@ -1349,9 +1385,10 @@ class StationListScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("launcher"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Stations",
             font_factor=0.55,
             color_role="fg_dim",
@@ -1440,9 +1477,10 @@ class AlarmListScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("launcher"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.50), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.44), head_h),
             text_src="Alarms",
             font_factor=0.55,
             color_role="fg_dim",
@@ -1600,8 +1638,9 @@ class AlarmEditScene(Scene):
             cw, head_h,
             on_press=self._cancel,
         ))
+        self.add(_home_button(cw, head_h, self._compositor))
         self.add(TextWidget(
-            Rect(int(cw * 0.14), 0, int(cw * 0.40), head_h),
+            Rect(int(cw * 0.20), 0, int(cw * 0.34), head_h),
             text_src=("New Alarm" if self._is_new else "Edit Alarm"),
             font_factor=0.55,
             color_role="fg_dim",
@@ -1828,9 +1867,10 @@ class AboutScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="About",
             font_factor=0.55,
             color_role="fg_dim",
@@ -1883,9 +1923,10 @@ class BrightnessScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Brightness",
             font_factor=0.55,
             color_role="fg_dim",
@@ -1999,9 +2040,10 @@ class AudioOutputScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Audio Output",
             font_factor=0.55,
             color_role="fg_dim",
@@ -2150,9 +2192,10 @@ class BackgroundScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Background",
             font_factor=0.55,
             color_role="fg_dim",
@@ -2335,9 +2378,10 @@ class MapCenterScene(Scene):
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("background"),
         ))
+        self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.14), 0,
-                 int(canvas_w * 0.72), head_h),
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
             text_src="Map Centre",
             font_factor=0.55,
             color_role="fg_dim",

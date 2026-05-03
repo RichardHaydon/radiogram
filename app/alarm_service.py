@@ -243,7 +243,15 @@ class AlarmService:
         self._firing = a
         self._firing_started_at = datetime.now()
         if a.days == 0:
-            a.enabled = False  # one-shot: auto-disable after firing
+            # One-shot: remove from the persisted list once it has
+            # started firing — it has done its job. The reference is
+            # still held by self._firing (and by self._snooze_alarm if
+            # the user snoozes), so dismiss/snooze paths keep working.
+            # Belt-and-braces: also clear `enabled` so any code path
+            # that still inspects the local Alarm sees it as inactive.
+            a.enabled = False
+            self._alarms = [x for x in self._alarms if x.id != a.id]
+            self._last_fired.pop(a.id, None)
             self._store.save(self._alarms)
         if not self._alarm_url:
             print("alarm: no URL configured — alarm scene will show but "

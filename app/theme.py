@@ -86,20 +86,23 @@ VFD = Theme(
     name="VFD Green",
     palette=Palette(
         bg=(0, 0, 0),
-        # Green family — clock + primary/secondary text
-        fg_bright=(45, 175, 105),      # deeper phosphor green for the clock
-        fg_dim=(70, 140, 110),          # subdued green for headers
-        fg_subtle=(110, 200, 160),      # mid green for secondary text
-        # Amber family — controls (button labels + outlines) sit in
-        # the complementary warm half of the wheel, the way the green
-        # display + amber buttons read on a Marantz/Pioneer hi-fi.
-        fg_accent=(255, 180, 90),       # warm amber for button labels
-        outline=(140, 95, 40),           # darker amber for button outlines
-        weather_sun=(255, 230, 80),
-        weather_cloud=(120, 200, 165),
-        weather_rain=(80, 230, 230),
-        weather_snow=(200, 255, 230),
-        weather_storm=(255, 235, 90),
+        # Cyan-tinted phosphor — what an actual VFD (vacuum-fluorescent
+        # display) looks like under smoked glass. The previous "deeper
+        # phosphor green" was too desaturated and disappeared into the
+        # map. This is the brighter aqua-green you see on Sony/Marantz
+        # tape decks and microwaves.
+        fg_bright=(80, 235, 175),       # bright aqua-phosphor for the clock
+        fg_dim=(80, 175, 140),           # mid phosphor for secondary text
+        fg_subtle=(140, 220, 190),       # pale phosphor for hints
+        # Amber controls (warm complementary) — slightly brighter than
+        # before so buttons hold their own next to the brighter clock.
+        fg_accent=(255, 195, 100),       # warm amber for button labels
+        outline=(160, 110, 50),           # amber outline
+        weather_sun=(255, 230, 90),
+        weather_cloud=(140, 215, 180),
+        weather_rain=(95, 235, 230),
+        weather_snow=(210, 255, 235),
+        weather_storm=(255, 235, 100),
     ),
     clock_style="digital",
     button_style="rounded",
@@ -147,23 +150,24 @@ LIGHT = Theme(
     button_style="rounded",
 )
 
-INK = Theme(
-    name="Ink & Paper",
+ESPRESSO = Theme(
+    name="Espresso",
     palette=Palette(
-        # Newsprint: warm off-white field, near-black ink for the clock,
-        # deep sepia for accents. Reads like a hand-set headline over
-        # the parchment-toned Vintage map style.
-        bg=(238, 230, 210),                 # aged paper
-        fg_bright=(28, 24, 22),             # india-ink black
-        fg_dim=(100, 88, 78),                # warm grey for secondary
-        fg_subtle=(150, 138, 122),           # faded ink for hints
-        fg_accent=(135, 70, 35),             # burnt sienna for controls
-        outline=(165, 130, 95),               # tan rule line
-        weather_sun=(180, 130, 35),
-        weather_cloud=(130, 120, 105),
-        weather_rain=(60, 95, 135),
-        weather_snow=(190, 180, 165),
-        weather_storm=(195, 145, 50),
+        # Warm dark coffee bg with cream foreground — same cosy bedside
+        # mood as the old "Tape Deck" Dark theme but a bit deeper and
+        # warmer. Replaces "Ink & Paper" (light theme; the black-on-
+        # paper variant didn't pair well with the maps).
+        bg=(28, 22, 18),                     # dark espresso
+        fg_bright=(232, 215, 188),           # warm cream
+        fg_dim=(160, 140, 115),              # milky coffee
+        fg_subtle=(205, 185, 155),           # milk foam
+        fg_accent=(225, 150, 65),            # caramel
+        outline=(125, 80, 35),                # dim caramel outline
+        weather_sun=(255, 200, 90),
+        weather_cloud=(180, 170, 155),
+        weather_rain=(140, 175, 205),
+        weather_snow=(225, 215, 195),
+        weather_storm=(245, 195, 95),
     ),
     clock_style="digital",
     button_style="rounded",
@@ -194,27 +198,54 @@ MARINE = Theme(
 SLATE_THEME = Theme(
     name="Slate",
     palette=Palette(
-        # Cool grey neutral — the most map-deferential choice. Pewter
-        # numerals on charcoal, with a steel-blue accent that reads
-        # without competing with the world map's own greys.
+        # Cool grey neutral — the most map-deferential choice. Brighter
+        # silver primary + more vivid steel-blue accent than the first
+        # cut so the clock reads cleanly over the busy map without the
+        # hue fighting the cartography's own blue-greys.
         bg=(22, 26, 32),                     # charcoal
-        fg_bright=(220, 224, 232),          # pewter
-        fg_dim=(135, 145, 160),              # ash grey
-        fg_subtle=(180, 188, 200),           # silver
-        fg_accent=(120, 175, 215),           # cool steel blue
-        outline=(60, 90, 115),                # deep steel for outlines
-        weather_sun=(230, 200, 110),
-        weather_cloud=(180, 190, 205),
-        weather_rain=(120, 180, 220),
-        weather_snow=(220, 230, 240),
-        weather_storm=(235, 205, 115),
+        fg_bright=(238, 242, 248),           # bright silver
+        fg_dim=(150, 160, 175),              # ash grey
+        fg_subtle=(195, 205, 218),           # pale silver
+        fg_accent=(140, 200, 240),           # vivid steel blue
+        outline=(70, 110, 145),               # mid steel for outlines
+        weather_sun=(240, 210, 120),
+        weather_cloud=(195, 205, 220),
+        weather_rain=(135, 195, 230),
+        weather_snow=(225, 235, 245),
+        weather_storm=(245, 215, 125),
     ),
     clock_style="digital",
     button_style="rounded",
 )
 
 
-# Order shown in the Theme picker. The map-friendly classics lead;
+FOREST = Theme(
+    name="Forest",
+    palette=Palette(
+        # Deep moss-green field with cream / rust accents. Pairs well
+        # with the Atlas (green land) and Vintage (warm brown) maps —
+        # the foreground hue mirrors the cartography. Bedside-friendly
+        # at 3am because the bg is genuinely dark.
+        bg=(14, 24, 18),                     # deep forest
+        fg_bright=(220, 230, 195),           # bone / parchment
+        fg_dim=(135, 160, 120),              # moss
+        fg_subtle=(180, 200, 160),           # dry leaf
+        fg_accent=(225, 145, 60),             # rust
+        outline=(120, 80, 35),                 # dim rust
+        weather_sun=(245, 200, 90),
+        weather_cloud=(170, 185, 165),
+        weather_rain=(125, 175, 200),
+        weather_snow=(215, 230, 210),
+        weather_storm=(235, 195, 95),
+    ),
+    clock_style="digital",
+    button_style="rounded",
+)
+
+
+# Order shown in the Theme picker. Map-friendly dark themes lead;
 # Daylight (the only light theme) trails so it's easy to find.
-THEMES: list[Theme] = [DARK, SLATE_THEME, MARINE, VFD, AMBER, INK, LIGHT]
+THEMES: list[Theme] = [
+    DARK, SLATE_THEME, MARINE, FOREST, VFD, AMBER, ESPRESSO, LIGHT,
+]
 DEFAULT = DARK

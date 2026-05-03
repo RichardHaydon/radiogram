@@ -657,6 +657,7 @@ def main() -> int:
 
     background = BackgroundService(BACKGROUND_PATH)
     world_map = WorldMapService(display.canvas_w, display.canvas_h)
+    world_map.start()
     print(f"background: {background.mode}", flush=True)
 
     # Idle/Radio opt in to a background; the provider returns None when
@@ -853,6 +854,7 @@ def main() -> int:
         weather.stop()
         verse.stop()
         mpd.stop()
+        world_map.stop()
         try:
             backlight.write(backlight.maximum)
         except Exception:
