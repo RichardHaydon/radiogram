@@ -1779,64 +1779,68 @@ class AlarmEditScene(Scene):
 
 
 class AlarmFiringScene(Scene):
-    """Alarm-firing: small clock + alarm label + side-by-side
-    SNOOZE / STOP buttons. Snooze silences for SNOOZE_MINUTES (9) and
-    re-fires; STOP cancels for good. A hard cap in AlarmService also
-    auto-stops after 30 min so an unattended alarm can't run all day."""
+    """Alarm-firing: world-map background + halo'd clock + bell-and-time
+    label + a single big STOP button at the bottom. No snooze — the
+    user explicitly wanted the firing screen to be unambiguous: tap to
+    stop, end. The hard cap in AlarmService still auto-stops after 30
+    min so an unattended panel doesn't play all day."""
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  alarm_service):
         super().__init__(theme, canvas_w, canvas_h)
-        h_top = int(canvas_h * 0.22)
-        h_mid = int(canvas_h * 0.20)
-        h_btm = canvas_h - h_top - h_mid
 
+        # Bottom band carries the STOP button; clock + bell label
+        # share the upper area, vertically centred.
+        btn_h = int(canvas_h * 0.22)
+        body_h = canvas_h - btn_h
+
+        # Big clock in the upper portion, halo'd so it pops cleanly
+        # over the map.
+        clock_h = int(canvas_h * 0.46)
         self.add(ClockWidget(
-            Rect(0, 0, canvas_w, h_top),
-            font_factor=0.70,
+            Rect(0, int(body_h * 0.10), canvas_w, clock_h),
+            font_factor=0.55,
         ))
 
         def alarm_label() -> str:
             a = alarm_service.firing_alarm
             if a is None:
                 return ""
-            return f"ALARM  {a.hour:02d}:{a.minute:02d}"
+            return f"{a.hour:02d}:{a.minute:02d}"
 
-        # Bell glyph + label sit on the same row. The bell is drawn via
-        # PIL primitives so it renders regardless of font emoji coverage
-        # — DejaVu Sans Bold has no ⏰/🔔, which is why the previous
-        # version showed an empty glyph box.
-        bell_size = int(h_mid * 0.55)
-        bell_x = int(canvas_w * 0.04)
+        # Bell glyph + label sit on the same row, just below the clock.
+        # Bell is drawn from PIL primitives so emoji-less fonts work.
+        label_y = int(body_h * 0.10) + clock_h + int(body_h * 0.02)
+        label_h = body_h - (label_y - 0) - int(body_h * 0.04)
+        bell_size = int(label_h * 0.65)
+        # Centre bell + text together: pre-measure text, lay them out
+        # as a left-anchored unit roughly centred on canvas.
+        bell_x = int(canvas_w * 0.36)
         self.add(BellIconWidget(
-            Rect(bell_x,
-                 h_top + (h_mid - bell_size) // 2,
+            Rect(bell_x, label_y + (label_h - bell_size) // 2,
                  bell_size, bell_size),
             color_role="fg_accent",
         ))
         self.add(TextWidget(
-            Rect(0, h_top, canvas_w, h_mid),
+            Rect(bell_x + bell_size, label_y,
+                 canvas_w - bell_x - bell_size, label_h),
             text_src=alarm_label,
-            font_factor=0.55,
+            font_factor=0.70,
             color_role="fg_accent",
+            halo=True,
         ))
 
-        # Two side-by-side buttons. Snooze on the left (smaller blast
-        # radius — easy to recover from), Stop on the right.
-        btn_y = h_top + h_mid
-        snooze_w = canvas_w // 2
+        # Single STOP button — full footer width, large but not absurd
+        # font (font_factor on min(w, h) of a 1280×158 button — height
+        # is the limiter, so 0.40 gives ~63px text).
+        btn_y = canvas_h - btn_h
         self.add(Button(
-            Rect(0, btn_y, snooze_w, h_btm),
-            label_src="SNOOZE",
-            on_press=lambda: alarm_service.snooze(),
-            font_factor=0.50,
-            color_role="fg_dim",
-        ))
-        self.add(Button(
-            Rect(snooze_w, btn_y, canvas_w - snooze_w, h_btm),
+            Rect(0, btn_y, canvas_w, btn_h),
             label_src="STOP",
             on_press=lambda: alarm_service.stop_firing(),
-            font_factor=0.50,
+            font_factor=0.40,
+            color_role="fg_bright",
+            halo=True,
         ))
 
 

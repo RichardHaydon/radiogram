@@ -717,10 +717,14 @@ def main() -> int:
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, mpd_service=mpd, station_service=stations,
     )
-    # Idle + Radio opt in to backgrounds (the only scenes shown long
-    # enough that an animated underlay is meaningful).
+    # Idle + Radio + the alarm-firing scene opt in to the world map
+    # background. Alarm-firing inherits because the user wanted the
+    # whole device to feel coherent at 7am — same map, halo'd clock,
+    # then a single STOP button rather than a flat black emergency
+    # screen.
     scenes["idle"]._background_provider = bg_provider
     scenes["radio"]._background_provider = bg_provider
+    scenes["alarm"]._background_provider = bg_provider
     scenes["launcher"] = LauncherScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor,
