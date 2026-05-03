@@ -94,10 +94,10 @@ FRAME_RATE = 5
 FADE_DURATION_S = 1.0
 ROTATION_CCW = 90  # CCW canvas → fb. Inverse used for touch hit-test.
 
-# Gesture thresholds (panel pixels, except SWIPE_MAX_S in seconds).
-TAP_MAX_PX = 30        # release within this distance of press = tap
-SWIPE_MIN_PX = 80      # release at least this far = swipe (otherwise drag)
-SWIPE_MAX_S = 0.8      # release after this long = drag, not swipe
+# Gesture threshold (panel pixels). Movement above this = drag → discarded.
+# Swipes are no longer classified (the launcher opens via tap-on-idle, not
+# a swipe-up edge gesture), so anything that's not a clean tap is dropped.
+TAP_MAX_PX = 30
 
 ALARMS_PATH = Path("/var/lib/clockradio/alarms.json")
 STATIONS_PATH = Path("/var/lib/clockradio/stations.json")
@@ -315,20 +315,13 @@ class TouchReader:
                         move = (dx * dx + dy * dy) ** 0.5
                         cx, cy = self.display.panel_to_canvas(
                             self._press_x, self._press_y)
+                        del dt  # swipe-classification removed
                         if move <= TAP_MAX_PX:
                             events.append(TouchEvent("tap", cx, cy))
-                        elif move >= SWIPE_MIN_PX and dt <= SWIPE_MAX_S:
-                            end_cx, end_cy = self.display.panel_to_canvas(
-                                self._last_x, self._last_y)
-                            cdx = end_cx - cx
-                            cdy = end_cy - cy
-                            if abs(cdx) > abs(cdy):
-                                direction = "right" if cdx > 0 else "left"
-                            else:
-                                direction = "down" if cdy > 0 else "up"
-                            events.append(TouchEvent(
-                                "swipe", cx, cy, direction))
-                        # else: ambiguous drag — discard.
+                        # Anything that moved beyond TAP_MAX_PX is
+                        # discarded — swipes are no longer used as a
+                        # UI gesture; the launcher opens via empty-area
+                        # tap on idle/radio.
                         self._press_x = self._press_y = None
         return events
 
@@ -376,16 +369,13 @@ class Compositor:
 
     System chrome
     -------------
-    - Edge swipe-up from bottom 30% toggles the "launcher" overlay.
-    - Edge swipe-down from top 30% toggles the "quick" overlay.
-    - Both are blocked while an alarm is firing so a 3 a.m. brush can't
-      dismiss the alarm.
-    - Left/right swipes (and non-edge up/down) flow to the underlying
-      scene's on_swipe.
+    - A tap on empty area in IdleScene/RadioScene opens the "launcher"
+      (Apps) overlay. Buttons inside those scenes still receive their
+      own taps unchanged (alarm pill, transport row).
+    - Swipe gestures have been removed — every navigation step is now
+      a single tap on a visible affordance (back arrow at top-left of
+      every overlay, app tile in the launcher).
     """
-
-    LAUNCHER_EDGE = 0.30  # swipe-up must start below this fraction from top
-    QUICK_EDGE = 0.30     # swipe-down must start above this fraction
 
     # Window during which a second tap is ignored after a button
     # press. Covers the full visual feedback cycle (one repaint at
@@ -554,7 +544,19 @@ class Compositor:
         scene = self.scenes[self.current_scene_name()]
         btn = scene.hit(cx, cy)
         if btn is None:
-            return False
+            # No button — give the scene a chance to handle the tap
+            # (IdleScene/RadioScene open the Apps overlay on empty-area
+            # taps; everything else returns False and the tap is lost).
+            try:
+                handled = bool(scene.on_tap(cx, cy))
+            except Exception as exc:
+                print(f"scene on_tap: {exc}",
+                      file=sys.stderr, flush=True)
+                handled = False
+            if handled:
+                self._tap_lockout_until = now + self.TAP_LOCKOUT_S
+                self._last_key = None
+            return handled
         # Synchronously paint + present a "pressed" frame BEFORE
         # invoking the action. The user sees the press registered
         # within one render tick; the action's downstream render
@@ -578,31 +580,6 @@ class Compositor:
         except Exception as exc:
             print(f"button on_press: {exc}", file=sys.stderr, flush=True)
         return True
-
-    def dispatch_swipe(self, direction: str, cx: float, cy: float) -> bool:
-        # Block all gesture chrome while an alarm is firing.
-        if self.underlying_scene_name() == "alarm":
-            return False
-        canvas_h = self.display.canvas_h
-        # System chrome: edge-triggered up/down toggle global overlays.
-        if direction == "up" and cy > canvas_h * (1 - self.LAUNCHER_EDGE):
-            return self.toggle_overlay("launcher")
-        if direction == "down" and cy < canvas_h * self.QUICK_EDGE:
-            return self.toggle_overlay("quick")
-        # Home gesture: swipe right anywhere drops you all the way back
-        # to the underlying idle/radio scene by clearing whatever
-        # overlay (settings, weather, alarm_edit, …) is currently on
-        # top. No-op when no overlay is open.
-        if direction == "right" and self._overlay is not None:
-            self.clear_overlay()
-            return True
-        # Anything else flows to whatever scene is on top.
-        scene = self.scenes[self.current_scene_name()]
-        try:
-            return bool(scene.on_swipe(direction, cx, cy))
-        except Exception as exc:
-            print(f"on_swipe: {exc}", file=sys.stderr, flush=True)
-            return False
 
 
 # =====================================================================
@@ -819,8 +796,9 @@ def main() -> int:
                     continue
                 if ev.kind == "tap":
                     compositor.dispatch_tap(ev.cx, ev.cy)
-                elif ev.kind == "swipe":
-                    compositor.dispatch_swipe(ev.direction, ev.cx, ev.cy)
+                # Swipes are no longer dispatched — the launcher and
+                # quick-panel overlays are now reached via tap-on-idle
+                # and the underlying scenes' explicit buttons.
 
             if time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
                 target_b = idle_dim_level()

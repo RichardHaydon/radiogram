@@ -20,9 +20,9 @@ from alarm import Alarm, days_label
 from theme import Theme, color
 from widgets import (
     AppTile, BellIconWidget, Button, CheckboxRow, ClockWidget,
-    ColorPairWidget, DateWidget, LAUNCHER_ICONS, Rect, TextWidget,
-    TwoLineText, WeatherIconWidget, Widget, WifiStatusWidget,
-    WrappedTextWidget,
+    ColorPairWidget, DateWidget, IconButton, IconRow, LAUNCHER_ICONS,
+    Rect, SETTINGS_ICONS, TextWidget, TwoLineText, WeatherIconWidget,
+    Widget, WifiStatusWidget, WrappedTextWidget, _icon_back_arrow,
 )
 
 
@@ -89,10 +89,11 @@ class Scene:
                 return w
         return None
 
-    def on_swipe(self, direction: str, cx: float, cy: float) -> bool:
-        """Handle a swipe. direction is "up"/"down"/"left"/"right" in canvas
-        space. Return True if handled. Default: not handled — the compositor
-        will simply log it. Subclasses override to wire gestures."""
+    def on_tap(self, cx: float, cy: float) -> bool:
+        """Called by the compositor when a tap landed on the scene but
+        not on any Button. Default: not handled. IdleScene/RadioScene
+        override to open the Apps overlay so the whole screen acts as
+        a "go to apps" affordance — no edge-swipe needed."""
         return False
 
     def on_show(self) -> None:
@@ -100,6 +101,26 @@ class Scene:
         overlay. Default: no-op. Subclasses override to kick a refresh
         of any data they display (e.g. WifiScene rescans wifi)."""
         return None
+
+
+# --- back-arrow header button (used by every overlay) ----------------
+
+def _back_button(canvas_w: int, head_h: int, on_press) -> IconButton:
+    """Standard back-arrow icon button, sized to the scene's header
+    band and anchored to the top-left corner. Replaces the historical
+    "CLOSE" / "✕" text buttons across every overlay so the navigation
+    affordance reads the same everywhere."""
+    btn_h = int(head_h * 0.80)
+    btn_w = btn_h  # square
+    return IconButton(
+        Rect(int(canvas_w * 0.025), int(head_h * 0.10),
+             btn_w, btn_h),
+        on_press=on_press,
+        icon_drawer=_icon_back_arrow,
+        color_role="fg_accent",
+        outline_width=2,
+        icon_factor=0.65,
+    )
 
 
 # --- helpers used by IdleScene ---------------------------------------
@@ -260,6 +281,7 @@ class IdleScene(Scene):
         # but no longer drawn — wifi state surfaces in the dedicated
         # Wifi settings scene now that the header is gone.
         del wifi_service
+        self._compositor = compositor
 
         footer_h = int(canvas_h * 0.10)
         body_h = canvas_h - footer_h
@@ -273,35 +295,41 @@ class IdleScene(Scene):
             font_factor=0.60,
         ))
 
-        # Alarm pill: bell icon + compact alarm string, anchored to
-        # the left of the footer. Tap anywhere on the pill opens the
-        # alarm list. Bell only renders when an alarm is armed; the
-        # text falls back to "No alarm" so the tap target is always
-        # discoverable.
+        # Alarm pill: tap target spans bell + label so a tap on the
+        # bell opens the alarm list too. The Button is added BEFORE
+        # the bell widget so the bell paints on top (the button is
+        # outline-less / text-only so there's no rectangle to obscure;
+        # the centred label also stays well to the right of the bell
+        # at this footer width).
         alarm_w = int(canvas_w * 0.26)
         foot_y = canvas_h - footer_h
         bell_size = int(footer_h * 0.55)
         bell_x = int(canvas_w * 0.025)
-        self.add(BellIconWidget(
-            Rect(bell_x, foot_y + (footer_h - bell_size) // 2,
-                 bell_size, bell_size),
-            is_visible_src=lambda: _alarm_armed(alarm_service),
-            color_role="fg_dim",
-        ))
-        text_x = bell_x + bell_size + int(canvas_w * 0.005)
         self.add(Button(
-            Rect(text_x, foot_y,
-                 alarm_w - (text_x - 0), footer_h),
+            Rect(bell_x, foot_y, alarm_w - bell_x, footer_h),
             label_src=lambda: _format_footer_alarm(alarm_service),
             on_press=lambda: compositor.set_overlay("alarm_list"),
             outline_width=0,
             color_role="fg_dim",
             font_factor=0.40,
         ))
+        self.add(BellIconWidget(
+            Rect(bell_x, foot_y + (footer_h - bell_size) // 2,
+                 bell_size, bell_size),
+            is_visible_src=lambda: _alarm_armed(alarm_service),
+            color_role="fg_dim",
+        ))
 
         # Transport zones share the rest of the footer width.
         _add_transport_footer(self, mpd_service, station_service,
                               canvas_w, canvas_h, x_offset=alarm_w)
+
+    def on_tap(self, cx: float, cy: float) -> bool:
+        """Tap on empty area (clock or map background) → open Apps.
+        Tap on the alarm pill / transport buttons keeps its own action.
+        Replaces the old swipe-up-from-bottom-edge launcher gesture."""
+        self._compositor.set_overlay("launcher")
+        return True
 
 
 class RadioScene(Scene):
@@ -313,6 +341,7 @@ class RadioScene(Scene):
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor, mpd_service, station_service):
         super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
         # Reserve the bottom 10% for the volume footer (added below).
         # In the upper 90% give the clock more room (45%), now-playing
         # band moderate (33%), action row trim (22%) — the always-on
@@ -386,6 +415,12 @@ class RadioScene(Scene):
         _add_transport_footer(self, mpd_service, station_service,
                               canvas_w, canvas_h)
 
+    def on_tap(self, cx: float, cy: float) -> bool:
+        """Same empty-area-tap-to-Apps as IdleScene so the gesture is
+        the same in both home modes (clock & radio)."""
+        self._compositor.set_overlay("launcher")
+        return True
+
 
 class LauncherScene(Scene):
     """System launcher (swipe-up from bottom edge). 3×2 grid of app
@@ -396,24 +431,26 @@ class LauncherScene(Scene):
                  compositor):
         super().__init__(theme, canvas_w, canvas_h)
         head_h = int(canvas_h * 0.12)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.clear_overlay(),
+        ))
         self.add(TextWidget(
-            Rect(0, 0, canvas_w, head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Apps",
             font_factor=0.55,
             color_role="fg_dim",
         ))
-
-        def wrap(fn):
-            def _():
-                compositor.clear_overlay()
-                fn()
-            return _
 
         def stub():
             return None
 
         # (label, on_press, icon-name) — icons are looked up in
         # LAUNCHER_ICONS so we can swap art without touching this list.
+        # Sub-overlays opened from here close back to "launcher" (not
+        # all the way to idle), so the user always lands on a single
+        # consistent home for navigation.
         cells = [
             ("RADIO",
              lambda: compositor.set_overlay("station_list"), "radio"),
@@ -423,7 +460,7 @@ class LauncherScene(Scene):
              lambda: compositor.set_overlay("weather"), "partly_cloudy"),
             ("VERSE",
              lambda: compositor.set_overlay("verse"), "book"),
-            ("CAMERA", wrap(stub), "camera"),
+            ("CAMERA", stub, "camera"),
             ("SETTINGS",
              lambda: compositor.set_overlay("settings"), "gear"),
         ]
@@ -568,45 +605,48 @@ class SettingsScene(Scene):
                  compositor):
         super().__init__(theme, canvas_w, canvas_h)
         head_h = int(canvas_h * 0.14)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("launcher"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Settings",
             font_factor=0.55,
             color_role="fg_dim",
         ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.clear_overlay(),
-            font_factor=0.42,
-        ))
         body_top = head_h + int(canvas_h * 0.04)
         body_h = canvas_h - body_top - int(canvas_h * 0.04)
+        # (label, action, icon-name) — icons live in widgets.SETTINGS_ICONS
+        # so the row label and its glyph stay aligned in one place.
         rows = [
-            ("WIFI", lambda: compositor.set_overlay("wifi"), "fg_bright"),
+            ("WIFI",
+             lambda: compositor.set_overlay("wifi"), "wifi"),
             ("AUDIO",
-             lambda: compositor.set_overlay("audio_output"), "fg_bright"),
-            ("THEME", lambda: compositor.set_overlay("theme"),
-             "fg_bright"),
+             lambda: compositor.set_overlay("audio_output"), "speaker"),
+            ("THEME",
+             lambda: compositor.set_overlay("theme"), "palette"),
             ("BACKGROUND",
-             lambda: compositor.set_overlay("background"), "fg_bright"),
+             lambda: compositor.set_overlay("background"), "globe"),
             ("BRIGHTNESS",
-             lambda: compositor.set_overlay("brightness"), "fg_bright"),
-            ("ABOUT", lambda: compositor.set_overlay("about"), "fg_bright"),
+             lambda: compositor.set_overlay("brightness"), "brightness"),
+            ("ABOUT",
+             lambda: compositor.set_overlay("about"), "info"),
         ]
         # Reserve enough cell height for any future addition without
         # wobbling the existing layout.
         cell_h = body_h // max(len(rows), 7)
-        for i, (label, action, role) in enumerate(rows):
-            self.add(Button(
+        for i, (label, action, icon_name) in enumerate(rows):
+            self.add(IconRow(
                 Rect(int(canvas_w * 0.06), body_top + i * cell_h,
                      int(canvas_w * 0.88), cell_h - 8),
                 label_src=label,
                 on_press=action,
-                font_factor=0.30,
-                color_role=role,
+                icon_drawer=SETTINGS_ICONS.get(icon_name),
+                font_factor=0.42,
+                color_role="fg_bright",
+                icon_color_role="fg_accent",
             ))
 
 
@@ -621,19 +661,16 @@ class ThemeScene(Scene):
         self._theme_service = theme_service
         head_h = int(canvas_h * 0.14)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Theme",
             font_factor=0.55,
             color_role="fg_dim",
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.set_overlay("settings"),
-            font_factor=0.42,
         ))
         self._rows: list[Button] = []
 
@@ -713,33 +750,22 @@ class WifiScene(Scene):
         self._wifi = wifi_service
         head_h = int(canvas_h * 0.12)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.32), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.42), head_h),
             text_src="Wifi",
             font_factor=0.55,
             color_role="fg_dim",
         ))
         self.add(Button(
-            Rect(int(canvas_w * 0.38), int(head_h * 0.10),
-                 int(canvas_w * 0.26), int(head_h * 0.80)),
+            Rect(int(canvas_w * 0.74), int(head_h * 0.10),
+                 int(canvas_w * 0.24), int(head_h * 0.80)),
             label_src="RESCAN",
             on_press=lambda: wifi_service.rescan(),
-            font_factor=0.42,
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.66), int(head_h * 0.10),
-                 int(canvas_w * 0.14), int(head_h * 0.80)),
-            label_src="✕",
-            on_press=lambda: compositor.clear_overlay(),
-            font_factor=0.55,
-        ))
-        # CLOSE label as well in case the ✕ glyph doesn't render in the font
-        self.add(Button(
-            Rect(int(canvas_w * 0.82), int(head_h * 0.10),
-                 int(canvas_w * 0.14), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.clear_overlay(),
             font_factor=0.42,
         ))
         # Status line
@@ -918,19 +944,16 @@ class WifiPasswordScene(Scene):
         cw, ch = self.canvas_w, self.canvas_h
 
         head_h = int(ch * 0.10)
+        self.add(_back_button(
+            cw, head_h,
+            on_press=self._cancel,
+        ))
         self.add(TextWidget(
-            Rect(int(cw * 0.04), 0, int(cw * 0.74), head_h),
+            Rect(int(cw * 0.14), 0, int(cw * 0.84), head_h),
             text_src=f"Wifi password — {self._ssid}",
             font_factor=0.50,
             color_role="fg_dim",
             font_role="regular",
-        ))
-        self.add(Button(
-            Rect(int(cw * 0.80), int(head_h * 0.10),
-                 int(cw * 0.18), int(head_h * 0.80)),
-            label_src="CANCEL",
-            on_press=self._cancel,
-            font_factor=0.42,
         ))
 
         entry_y = head_h + int(ch * 0.01)
@@ -1066,15 +1089,19 @@ class VerseScene(Scene):
         self._compositor = compositor
         self._verse = verse_service
         head_h = int(canvas_h * 0.10)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("launcher"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.42), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.46), head_h),
             text_src="Verse of the Day",
-            font_factor=0.55,
+            font_factor=0.50,
             color_role="fg_dim",
         ))
         self.add(Button(
-            Rect(int(canvas_w * 0.48), int(head_h * 0.10),
+            Rect(int(canvas_w * 0.62), int(head_h * 0.10),
                  int(canvas_w * 0.16), int(head_h * 0.80)),
             label_src=lambda: self._verse.translation.upper(),
             on_press=lambda: verse_service.cycle_translation(),
@@ -1082,17 +1109,10 @@ class VerseScene(Scene):
             color_role="fg_bright",
         ))
         self.add(Button(
-            Rect(int(canvas_w * 0.66), int(head_h * 0.10),
-                 int(canvas_w * 0.16), int(head_h * 0.80)),
+            Rect(int(canvas_w * 0.80), int(head_h * 0.10),
+                 int(canvas_w * 0.18), int(head_h * 0.80)),
             label_src="REFRESH",
             on_press=lambda: verse_service.refresh(),
-            font_factor=0.42,
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.84), int(head_h * 0.10),
-                 int(canvas_w * 0.12), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.clear_overlay(),
             font_factor=0.42,
         ))
         # Reference line
@@ -1136,7 +1156,7 @@ class VerseScene(Scene):
 class WeatherScene(Scene):
     """Overlay: current conditions + 5-day forecast strip with icons.
 
-    Header row: title + REFRESH + CLOSE.
+    Header row: back arrow + title + REFRESH.
     Current block: location top, then [icon | temp + condition] split.
     Forecast strip: 5 columns (next 5 days, today excluded), each
     stacked weekday / icon / hi-lo / precip-prob.
@@ -1149,25 +1169,22 @@ class WeatherScene(Scene):
         self._weather = weather_service
         head_h = int(canvas_h * 0.12)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("launcher"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
+            Rect(int(canvas_w * 0.14), 0,
                  int(canvas_w * 0.40), head_h),
             text_src="Weather",
             font_factor=0.55,
             color_role="fg_dim",
         ))
         self.add(Button(
-            Rect(int(canvas_w * 0.46), int(head_h * 0.10),
-                 int(canvas_w * 0.30), int(head_h * 0.80)),
+            Rect(int(canvas_w * 0.74), int(head_h * 0.10),
+                 int(canvas_w * 0.24), int(head_h * 0.80)),
             label_src="REFRESH",
             on_press=lambda: weather_service.refresh(),
-            font_factor=0.42,
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.78), int(head_h * 0.10),
-                 int(canvas_w * 0.18), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.clear_overlay(),
             font_factor=0.42,
         ))
         # Current conditions block
@@ -1328,23 +1345,24 @@ class StationListScene(Scene):
         self._stations = station_service
         head_h = int(canvas_h * 0.14)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("launcher"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Stations",
             font_factor=0.55,
             color_role="fg_dim",
         ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.clear_overlay(),
-            font_factor=0.42,
-        ))
         self._row_widgets: list[Widget] = []
 
     def _play_and_close(self, sid: str) -> None:
+        # Picking a station drops to the underlying RadioScene (which
+        # the default picker selects once MPD goes active) — the user
+        # immediately sees what's now playing. The back arrow takes
+        # the no-pick path, going to the Apps launcher instead.
         self._stations.play(sid)
         self._compositor.clear_overlay()
 
@@ -1404,7 +1422,7 @@ class StationListScene(Scene):
 class AlarmListScene(Scene):
     """Overlay: list of all configured alarms + ADD. Tap a row to edit it.
 
-    The header (title / ADD / CLOSE) is built in __init__ and stays put;
+    The header (back / title / ADD) is built in __init__ and stays put;
     rows are rebuilt each render so the list reflects live AlarmService
     state without a manual refresh.
     """
@@ -1418,25 +1436,22 @@ class AlarmListScene(Scene):
         self._alarms = alarm_service
         head_h = int(canvas_h * 0.14)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("launcher"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.48), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.50), head_h),
             text_src="Alarms",
             font_factor=0.55,
             color_role="fg_dim",
         ))
         self.add(Button(
-            Rect(int(canvas_w * 0.54), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
+            Rect(int(canvas_w * 0.74), int(head_h * 0.10),
+                 int(canvas_w * 0.24), int(head_h * 0.80)),
             label_src="+ ADD",
             on_press=lambda: self._open_edit(None),
-            font_factor=0.42,
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.clear_overlay(),
             font_factor=0.42,
         ))
         self._row_buttons: list[Button] = []
@@ -1581,26 +1596,23 @@ class AlarmEditScene(Scene):
 
         # Header
         head_h = int(ch * 0.12)
+        self.add(_back_button(
+            cw, head_h,
+            on_press=self._cancel,
+        ))
         self.add(TextWidget(
-            Rect(int(cw * 0.04), 0, int(cw * 0.40), head_h),
+            Rect(int(cw * 0.14), 0, int(cw * 0.40), head_h),
             text_src=("New Alarm" if self._is_new else "Edit Alarm"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
         self.add(Button(
-            Rect(int(cw * 0.46), int(head_h * 0.10),
-                 int(cw * 0.28), int(head_h * 0.80)),
+            Rect(int(cw * 0.68), int(head_h * 0.10),
+                 int(cw * 0.30), int(head_h * 0.80)),
             label_src=("ENABLED" if d.enabled else "DISABLED"),
             on_press=self._toggle_enabled,
             font_factor=0.42,
             color_role=("fg_bright" if d.enabled else "fg_dim"),
-        ))
-        self.add(Button(
-            Rect(int(cw * 0.78), int(head_h * 0.10),
-                 int(cw * 0.18), int(head_h * 0.80)),
-            label_src="✕",
-            on_press=self._cancel,
-            font_factor=0.55,
         ))
 
         # Time picker — two columns of three (▲ / digits / ▼) with a colon.
@@ -1812,19 +1824,16 @@ class AboutScene(Scene):
                  station_service, mpd_service):
         super().__init__(theme, canvas_w, canvas_h)
         head_h = int(canvas_h * 0.14)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="About",
             font_factor=0.55,
             color_role="fg_dim",
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.set_overlay("settings"),
-            font_factor=0.42,
         ))
 
         # Hostname + kernel are stable for the lifetime of the process so
@@ -1870,19 +1879,16 @@ class BrightnessScene(Scene):
         super().__init__(theme, canvas_w, canvas_h)
         self._svc = brightness_service
         head_h = int(canvas_h * 0.14)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Brightness",
             font_factor=0.55,
             color_role="fg_dim",
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.set_overlay("settings"),
-            font_factor=0.42,
         ))
 
         body_top = head_h + int(canvas_h * 0.04)
@@ -1989,19 +1995,16 @@ class AudioOutputScene(Scene):
         self._mpd = mpd_service
         head_h = int(canvas_h * 0.14)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Audio Output",
             font_factor=0.55,
             color_role="fg_dim",
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.set_overlay("settings"),
-            font_factor=0.42,
         ))
         self.add(TextWidget(
             Rect(int(canvas_w * 0.06), head_h + int(canvas_h * 0.06),
@@ -2143,19 +2146,16 @@ class BackgroundScene(Scene):
         self._bg = background_service
         head_h = int(canvas_h * 0.10)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Background",
             font_factor=0.55,
             color_role="fg_dim",
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.set_overlay("settings"),
-            font_factor=0.42,
         ))
         self._rows: list = []
 
@@ -2331,19 +2331,16 @@ class MapCenterScene(Scene):
         self._bg = background_service
         head_h = int(canvas_h * 0.10)
         self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("background"),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.04), 0,
-                 int(canvas_w * 0.70), head_h),
+            Rect(int(canvas_w * 0.14), 0,
+                 int(canvas_w * 0.72), head_h),
             text_src="Map Centre",
             font_factor=0.55,
             color_role="fg_dim",
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.76), int(head_h * 0.10),
-                 int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="CLOSE",
-            on_press=lambda: compositor.set_overlay("background"),
-            font_factor=0.42,
         ))
         self._rows: list = []
 

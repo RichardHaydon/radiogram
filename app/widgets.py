@@ -1119,12 +1119,24 @@ class AppTile(Button):
         if self._icon_drawer is not None:
             self._icon_drawer(draw, icon_rect, theme,
                               color(theme, self.icon_color_role))
-        # Label, fit-to-width
+        # Label, fit-to-width. Pick the largest font size whose
+        # measured width still fits within `avail_w` (binary-search
+        # by shrinking from the height-derived cap). This lets short
+        # labels like "RADIO" use the full label-band height while
+        # 8-letter labels like "SETTINGS" auto-shrink rather than
+        # ellipsis-truncate.
+        avail_w = int(inner_w * 0.92)
+        label = self.get_label()
         size = max(8, int(label_h * 0.78))
         f = get_font(font_path(theme, self.font_role), size)
+        while size > 10:
+            bbox = draw.textbbox((0, 0), label, font=f)
+            if bbox[2] - bbox[0] <= avail_w:
+                break
+            size -= 2
+            f = get_font(font_path(theme, self.font_role), size)
         label_y = r.y + i + icon_h + gap_h
-        max_w = int(inner_w * 0.92)
-        text = fit_text(draw, self.get_label(), f, max_w)
+        text = fit_text(draw, label, f, avail_w)
         draw_centered(draw, text, f,
                       r.cx, label_y + label_h / 2,
                       color(theme, self.color_role))
@@ -1296,3 +1308,268 @@ class WifiStatusWidget(Widget):
         role = self.color_role if connected else self.disconnected_role
         _icon_wifi(draw, self.rect, color(theme, role),
                    connected=connected)
+
+
+# --- header / settings icons (3-arg drawers: draw, rect, col) --------
+#
+# These drawers take a colour directly so they can be reused outside a
+# theme context (e.g. inside an IconButton that has already resolved
+# its own colour roles). Anything that wants palette-aware colouring
+# resolves it before the call.
+
+def _icon_back_arrow(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Chevron-style back arrow ("<"), centred in rect."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h)
+    w = max(3, int(s * 0.12))
+    arm = s * 0.30
+    draw.line([(cx + arm * 0.5, cy - arm), (cx - arm, cy)],
+              fill=col, width=w)
+    draw.line([(cx + arm * 0.5, cy + arm), (cx - arm, cy)],
+              fill=col, width=w)
+
+
+def _icon_speaker(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Speaker silhouette + two sound arcs."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.10))
+    box_x = cx - s * 0.62
+    box_w = s * 0.22
+    box_top = cy - s * 0.22
+    box_bot = cy + s * 0.22
+    cone_top = cy - s * 0.50
+    cone_bot = cy + s * 0.50
+    cone_x = box_x + box_w
+    cone_w = s * 0.30
+    draw.polygon(
+        [(box_x, box_top),
+         (cone_x, box_top),
+         (cone_x + cone_w, cone_top),
+         (cone_x + cone_w, cone_bot),
+         (cone_x, box_bot),
+         (box_x, box_bot)],
+        fill=col,
+    )
+    arc_x = cone_x + cone_w + s * 0.10
+    for r in (s * 0.32, s * 0.55):
+        draw.arc([arc_x - r, cy - r, arc_x + r, cy + r],
+                 -50, 50, fill=col, width=w)
+
+
+def _icon_brightness(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Sun glyph: filled disc + 8 rays."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.10))
+    r = s * 0.40
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
+    ray_in = r * 1.40
+    ray_out = r * 1.95
+    for k in range(8):
+        a = k * math.pi / 4
+        x1 = cx + ray_in * math.cos(a)
+        y1 = cy + ray_in * math.sin(a)
+        x2 = cx + ray_out * math.cos(a)
+        y2 = cy + ray_out * math.sin(a)
+        draw.line([x1, y1, x2, y2], fill=col, width=w)
+
+
+def _icon_palette(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Three swatches in a row — generic 'theme' / 'colours' glyph."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    sq = s * 0.50
+    gap = s * 0.12
+    total_w = 3 * sq + 2 * gap
+    x = cx - total_w / 2
+    for i in range(3):
+        sx = x + i * (sq + gap)
+        draw.rounded_rectangle(
+            [sx, cy - sq / 2, sx + sq, cy + sq / 2],
+            radius=int(sq * 0.20),
+            fill=col,
+        )
+
+
+def _icon_globe(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Stylised globe — circle with equator + meridians."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.09))
+    r = s * 0.85
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                 outline=col, width=w)
+    # Equator
+    draw.line([cx - r, cy, cx + r, cy], fill=col, width=w)
+    # Meridian (drawn as narrow ellipse to suggest curvature)
+    draw.ellipse([cx - r * 0.45, cy - r,
+                  cx + r * 0.45, cy + r],
+                 outline=col, width=w)
+
+
+def _icon_info(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Info glyph: 'i' inside a circle."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.09))
+    r = s * 0.85
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                 outline=col, width=w)
+    dot_r = max(2, int(s * 0.10))
+    dot_y = cy - s * 0.36
+    draw.ellipse([cx - dot_r, dot_y - dot_r,
+                  cx + dot_r, dot_y + dot_r], fill=col)
+    stem_w = max(3, int(s * 0.16))
+    draw.rectangle(
+        [cx - stem_w / 2, cy - s * 0.10,
+         cx + stem_w / 2, cy + s * 0.42],
+        fill=col,
+    )
+
+
+def _icon_wifi_full(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """3-arg wrapper around _icon_wifi for use as a settings-row glyph."""
+    _icon_wifi(draw, rect, col, connected=True)
+
+
+# Settings-list icon table — referenced by name from SettingsScene so
+# the row labels and their glyphs stay together as a single mapping.
+SETTINGS_ICONS = {
+    "wifi": _icon_wifi_full,
+    "speaker": _icon_speaker,
+    "palette": _icon_palette,
+    "globe": _icon_globe,
+    "brightness": _icon_brightness,
+    "info": _icon_info,
+}
+
+
+# --- icon-only button + icon-row button -------------------------------
+
+class IconButton(Button):
+    """Button whose face is a procedural icon instead of text. Used for
+    the universal back arrow and any other glyph-only affordance.
+    `icon_drawer` signature: (draw, rect, col)."""
+
+    def __init__(self, rect: Rect,
+                 on_press: Callable[[], None],
+                 icon_drawer: Callable, *,
+                 color_role: str = "fg_accent",
+                 outline_role: str = "outline",
+                 outline_width: int = 2,
+                 inset: int = 6,
+                 icon_factor: float = 0.55):
+        super().__init__(rect, label_src="", on_press=on_press,
+                         color_role=color_role,
+                         outline_role=outline_role,
+                         outline_width=outline_width,
+                         inset=inset)
+        self._icon_drawer = icon_drawer
+        self.icon_factor = icon_factor
+
+    def state_key(self) -> tuple:
+        return ("icon", bool(self._pressed))
+
+    def render(self, draw, theme):
+        r = self.rect
+        i = self.inset
+        bbox = [r.x + i, r.y + i, r.x2 - i, r.y2 - i]
+        pressed = self._pressed
+        fill_col = color(theme, self.color_role) if pressed else None
+        icon_col = (color(theme, "bg") if pressed
+                    else color(theme, self.color_role))
+        ow = self.outline_width or (2 if pressed else 0)
+        if ow > 0 or pressed:
+            outline_col = color(theme, self.outline_role)
+            style = getattr(theme, "button_style", "rounded")
+            if style == "rounded":
+                radius = max(6, min(r.w, r.h) // 8)
+                draw.rounded_rectangle(
+                    bbox, radius=radius,
+                    outline=outline_col, fill=fill_col,
+                    width=max(ow, 2 if pressed else ow))
+            else:
+                draw.rectangle(
+                    bbox, outline=outline_col, fill=fill_col,
+                    width=max(ow, 2 if pressed else ow))
+        iw = (r.w - 2 * i) * self.icon_factor
+        ih = (r.h - 2 * i) * self.icon_factor
+        icon_rect = Rect(int(r.cx - iw / 2), int(r.cy - ih / 2),
+                         int(iw), int(ih))
+        if self._icon_drawer is not None:
+            self._icon_drawer(draw, icon_rect, icon_col)
+
+
+class IconRow(Button):
+    """Settings-list row: icon on the left, label left-anchored to its
+    right. Tap anywhere on the row fires on_press. The button outline
+    extends across the whole row so the press-state inversion lands on
+    a single coherent shape (icon + label both flip)."""
+
+    def __init__(self, rect: Rect,
+                 label_src: Callable[[], str] | str,
+                 on_press: Callable[[], None],
+                 icon_drawer: Callable, *,
+                 font_role: str = "bold",
+                 font_factor: float = 0.32,
+                 color_role: str = "fg_bright",
+                 outline_role: str = "outline",
+                 outline_width: int = 2,
+                 inset: int = 6,
+                 icon_color_role: str = "fg_accent"):
+        super().__init__(rect, label_src, on_press,
+                         font_role=font_role,
+                         font_factor=font_factor,
+                         color_role=color_role,
+                         outline_role=outline_role,
+                         outline_width=outline_width,
+                         inset=inset)
+        self._icon_drawer = icon_drawer
+        self.icon_color_role = icon_color_role
+
+    def render(self, draw, theme):
+        label = self.get_label()
+        if not label:
+            return
+        r = self.rect
+        i = self.inset
+        bbox = [r.x + i, r.y + i, r.x2 - i, r.y2 - i]
+        pressed = self._pressed
+        fill_col = color(theme, self.color_role) if pressed else None
+        text_col = (color(theme, "bg") if pressed
+                    else color(theme, self.color_role))
+        icon_col = (color(theme, "bg") if pressed
+                    else color(theme, self.icon_color_role))
+        outline_col = color(theme, self.outline_role)
+        style = getattr(theme, "button_style", "rounded")
+        if style == "rounded":
+            radius = max(6, min(r.w, r.h) // 8)
+            draw.rounded_rectangle(
+                bbox, radius=radius,
+                outline=outline_col, fill=fill_col,
+                width=self.outline_width)
+        else:
+            draw.rectangle(
+                bbox, outline=outline_col, fill=fill_col,
+                width=self.outline_width)
+        # Icon zone — square area on the left, sized to the row height.
+        inner_h = r.h - 2 * i
+        icon_zone = inner_h
+        icon_pad = int(icon_zone * 0.18)
+        icon_rect = Rect(r.x + i + icon_pad,
+                         r.y + i + icon_pad,
+                         icon_zone - 2 * icon_pad,
+                         icon_zone - 2 * icon_pad)
+        if self._icon_drawer is not None:
+            self._icon_drawer(draw, icon_rect, icon_col)
+        # Label area: everything to the right of the icon zone.
+        label_x = r.x + i + icon_zone + int(r.w * 0.02)
+        label_w = r.x2 - i - label_x
+        size = max(8, int(r.h * self.font_factor))
+        f = get_font(font_path(theme, self.font_role), size)
+        text = fit_text(draw, label, f, int(label_w * 0.96))
+        bbox_t = draw.textbbox((0, 0), text, font=f)
+        text_h = bbox_t[3] - bbox_t[1]
+        text_y = r.cy - text_h / 2 - bbox_t[1]
+        draw.text((label_x, text_y), text, font=f, fill=text_col)

@@ -126,50 +126,6 @@ AMBER = Theme(
     button_style="rounded",
 )
 
-RED_LED = Theme(
-    name="Red LED",
-    palette=Palette(
-        # Bedside-friendly take on the 80s/90s clock-radio look: dimmed
-        # red 7-seg glow + soft cream controls. Not a dashboard at noon
-        # — a clock you can sleep next to.
-        bg=(0, 0, 0),
-        fg_bright=(170, 28, 22),          # softer red glow for the clock
-        fg_dim=(95, 25, 18),               # deep red for headers
-        fg_subtle=(140, 55, 48),           # muted rose for hints
-        fg_accent=(165, 155, 135),         # dim cream for buttons
-        outline=(90, 80, 65),              # deep cream for outlines
-        weather_sun=(200, 165, 70),
-        weather_cloud=(150, 140, 130),
-        weather_rain=(140, 165, 190),
-        weather_snow=(195, 190, 175),
-        weather_storm=(210, 175, 85),
-    ),
-    clock_style="digital",
-    button_style="rounded",
-)
-
-SYNTHWAVE = Theme(
-    name="Synthwave",
-    palette=Palette(
-        # Dusty-neon take on the 80s arcade pair: muted magenta clock +
-        # subdued teal controls. Bedside-friendly — same vibe, less
-        # retina burn at 3am.
-        bg=(8, 5, 25),
-        fg_bright=(190, 75, 140),         # dusty magenta for the clock
-        fg_dim=(105, 45, 85),              # deep plum for headers
-        fg_subtle=(155, 125, 175),         # muted lavender for secondary
-        fg_accent=(85, 170, 190),          # dusty teal for buttons
-        outline=(45, 90, 105),              # deep teal for outlines
-        weather_sun=(210, 130, 90),
-        weather_cloud=(155, 135, 175),
-        weather_rain=(85, 170, 190),
-        weather_snow=(190, 175, 210),
-        weather_storm=(210, 90, 150),
-    ),
-    clock_style="digital",
-    button_style="rounded",
-)
-
 LIGHT = Theme(
     name="Daylight",
     palette=Palette(
@@ -191,6 +147,74 @@ LIGHT = Theme(
     button_style="rounded",
 )
 
+INK = Theme(
+    name="Ink & Paper",
+    palette=Palette(
+        # Newsprint: warm off-white field, near-black ink for the clock,
+        # deep sepia for accents. Reads like a hand-set headline over
+        # the parchment-toned Vintage map style.
+        bg=(238, 230, 210),                 # aged paper
+        fg_bright=(28, 24, 22),             # india-ink black
+        fg_dim=(100, 88, 78),                # warm grey for secondary
+        fg_subtle=(150, 138, 122),           # faded ink for hints
+        fg_accent=(135, 70, 35),             # burnt sienna for controls
+        outline=(165, 130, 95),               # tan rule line
+        weather_sun=(180, 130, 35),
+        weather_cloud=(130, 120, 105),
+        weather_rain=(60, 95, 135),
+        weather_snow=(190, 180, 165),
+        weather_storm=(195, 145, 50),
+    ),
+    clock_style="digital",
+    button_style="rounded",
+)
 
-THEMES: list[Theme] = [DARK, VFD, AMBER, RED_LED, SYNTHWAVE, LIGHT]
+MARINE = Theme(
+    name="Marine Chart",
+    palette=Palette(
+        # Marine chart: cool ink-blue field with creamy bone for the
+        # clock and a single brass accent for controls. Pairs naturally
+        # with Slate / Blueprint maps.
+        bg=(14, 22, 38),                     # deep ink blue
+        fg_bright=(225, 215, 195),          # bone / parchment
+        fg_dim=(135, 150, 175),              # weathered sea-grey
+        fg_subtle=(180, 195, 215),           # pale chart blue
+        fg_accent=(205, 160, 70),            # muted brass
+        outline=(120, 95, 50),                # dim brass for outlines
+        weather_sun=(240, 195, 90),
+        weather_cloud=(160, 175, 195),
+        weather_rain=(115, 165, 215),
+        weather_snow=(220, 230, 240),
+        weather_storm=(240, 200, 95),
+    ),
+    clock_style="digital",
+    button_style="rounded",
+)
+
+SLATE_THEME = Theme(
+    name="Slate",
+    palette=Palette(
+        # Cool grey neutral — the most map-deferential choice. Pewter
+        # numerals on charcoal, with a steel-blue accent that reads
+        # without competing with the world map's own greys.
+        bg=(22, 26, 32),                     # charcoal
+        fg_bright=(220, 224, 232),          # pewter
+        fg_dim=(135, 145, 160),              # ash grey
+        fg_subtle=(180, 188, 200),           # silver
+        fg_accent=(120, 175, 215),           # cool steel blue
+        outline=(60, 90, 115),                # deep steel for outlines
+        weather_sun=(230, 200, 110),
+        weather_cloud=(180, 190, 205),
+        weather_rain=(120, 180, 220),
+        weather_snow=(220, 230, 240),
+        weather_storm=(235, 205, 115),
+    ),
+    clock_style="digital",
+    button_style="rounded",
+)
+
+
+# Order shown in the Theme picker. The map-friendly classics lead;
+# Daylight (the only light theme) trails so it's easy to find.
+THEMES: list[Theme] = [DARK, SLATE_THEME, MARINE, VFD, AMBER, INK, LIGHT]
 DEFAULT = DARK
