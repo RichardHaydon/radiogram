@@ -1343,28 +1343,42 @@ def _icon_back_arrow(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
               fill=col, width=w)
 
 
-def _icon_double_back(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
-    """Double chevron ("<<") — "go all the way back to home" affordance.
-    Sits beside the single back-arrow on every overlay header so the
-    user can unwind the whole stack with one tap rather than walking
-    back one level at a time."""
+def _icon_home(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Classic house silhouette — pitched roof + square body + small
+    door — drawn from primitives so it doesn't depend on the font's
+    emoji coverage. Used as the "go all the way back to home"
+    affordance on every overlay header."""
     cx, cy = rect.cx, rect.cy
     s = min(rect.w, rect.h)
-    w = max(3, int(s * 0.12))
-    arm = s * 0.26
-    gap = s * 0.18
-    # Right chevron (closer to centre)
-    rx = cx + gap * 0.5
-    draw.line([(rx + arm * 0.5, cy - arm), (rx - arm, cy)],
-              fill=col, width=w)
-    draw.line([(rx + arm * 0.5, cy + arm), (rx - arm, cy)],
-              fill=col, width=w)
-    # Left chevron (further left — gives the "double" silhouette)
-    lx = cx - gap * 0.5
-    draw.line([(lx + arm * 0.5, cy - arm), (lx - arm, cy)],
-              fill=col, width=w)
-    draw.line([(lx + arm * 0.5, cy + arm), (lx - arm, cy)],
-              fill=col, width=w)
+    w = max(3, int(s * 0.10))
+    # House occupies roughly 70% of the icon bounds, centred.
+    # Roof is the upper third, body is the lower two-thirds.
+    half_w = s * 0.36          # half-width of the body
+    body_top = cy - s * 0.04   # eaves line
+    body_bot = cy + s * 0.36   # ground line
+    roof_peak_y = cy - s * 0.40
+    # Roof (triangle, slightly overhung past the body for eaves).
+    eave = s * 0.08
+    draw.polygon(
+        [(cx - half_w - eave, body_top),
+         (cx + half_w + eave, body_top),
+         (cx, roof_peak_y)],
+        outline=col, fill=None, width=w,
+    )
+    # Body (square)
+    draw.rectangle(
+        [cx - half_w, body_top, cx + half_w, body_bot],
+        outline=col, fill=None, width=w,
+    )
+    # Door — small filled rectangle, centred on the wall, stretching
+    # from a bit above the floor up to roughly half the wall.
+    door_w = s * 0.16
+    door_h = s * 0.22
+    draw.rectangle(
+        [cx - door_w / 2, body_bot - door_h,
+         cx + door_w / 2, body_bot],
+        fill=col,
+    )
 
 
 def _icon_speaker(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:

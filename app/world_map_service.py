@@ -278,22 +278,14 @@ class WorldMapService:
     WARMER_LEAD_S = 12.0
     WARMER_TICK_S = 4.0
 
-    # Internal render scale — fraction of the display canvas at which
-    # the map is computed. Full canvas (1.0) on a Pi 3 takes ~3.7s per
-    # frame; 0.5 cuts that to ~1s with no visible quality loss for a
-    # background image (lines stamp at half-res then upscale through
-    # bilinear, which on a 7" 1280×720 panel reads as soft-edged but
-    # not pixelated).
-    INTERNAL_SCALE = 0.5
-
     def __init__(self, canvas_w: int, canvas_h: int):
-        # display_w/h is what callers see; canvas_w/h is the internal
-        # working resolution that all mask loads + numpy ops use. The
-        # final image is upscaled to display size before caching.
+        # Render at full display resolution — the warmer thread covers
+        # the per-minute rendering hit so we don't need to trade off
+        # crispness for speed on the main thread.
+        self.canvas_w = canvas_w
+        self.canvas_h = canvas_h
         self.display_w = canvas_w
         self.display_h = canvas_h
-        self.canvas_w = max(1, int(canvas_w * self.INTERNAL_SCALE))
-        self.canvas_h = max(1, int(canvas_h * self.INTERNAL_SCALE))
         self._cached_bucket: int = -1
         self._cached_style: str = ""
         self._cached_overlays: tuple[str, ...] = ()
@@ -437,16 +429,6 @@ class WorldMapService:
                  | np.roll(ocean, 1, axis=1) | np.roll(ocean, -1, axis=1))
         return land & neigh
 
-    def _upscale(self, img: Image.Image) -> Image.Image:
-        """Resize the half-res internal render up to display size.
-        BILINEAR keeps the cost low (the map is a background, not a
-        photo) and softens jagged lines from low-res stamping into
-        a more cartographic look on a 7" panel."""
-        if (img.width, img.height) == (self.display_w, self.display_h):
-            return img
-        return img.resize((self.display_w, self.display_h),
-                          Image.BILINEAR)
-
     @staticmethod
     def _bucket_for(n: datetime) -> int:
         return ((n.year * 366 + n.timetuple().tm_yday) * 24
@@ -513,7 +495,6 @@ class WorldMapService:
                   file=sys.stderr, flush=True)
             img = Image.new("RGB", (self.canvas_w, self.canvas_h),
                             color=style.bg)
-        img = self._upscale(img)
         with self._cache_lock:
             self._cached_bucket = bucket
             self._cached_style = style.name
@@ -600,7 +581,6 @@ class WorldMapService:
             print(f"map prewarm render failed: {exc}",
                   file=sys.stderr, flush=True)
             return
-        img = self._upscale(img)
         with self._cache_lock:
             # Only stash if the user-controlled params haven't
             # changed under us during the render — otherwise we'd

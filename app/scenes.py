@@ -23,7 +23,7 @@ from widgets import (
     ColorPairWidget, DateWidget, IconButton, IconRow, LAUNCHER_ICONS,
     Rect, SETTINGS_ICONS, TextWidget, TwoLineText, WeatherIconWidget,
     Widget, WifiStatusWidget, WrappedTextWidget, _icon_back_arrow,
-    _icon_double_back,
+    _icon_home,
 )
 
 
@@ -125,10 +125,12 @@ def _back_button(canvas_w: int, head_h: int, on_press) -> IconButton:
 
 
 def _home_button(canvas_w: int, head_h: int, compositor) -> IconButton:
-    """Double-chevron "go to home" button, placed next to the back
-    arrow on every overlay. Always clears all overlays back to the
+    """House-glyph "go to home" button, placed next to the back arrow
+    on every overlay. Always clears all overlays back to the
     underlying idle/radio scene — a one-tap escape from a deep nav
-    stack (e.g. Settings → Wifi → password keyboard back to clock)."""
+    stack (e.g. Settings → Wifi → password keyboard back to clock).
+    The house silhouette reads as "home" rather than "more back" the
+    way the previous double-chevron did."""
     btn_h = int(head_h * 0.80)
     btn_w = btn_h
     # Sit just to the right of the back button. Back is at x=0.025
@@ -140,10 +142,10 @@ def _home_button(canvas_w: int, head_h: int, compositor) -> IconButton:
         Rect(back_end + gap, int(head_h * 0.10),
              btn_w, btn_h),
         on_press=lambda: compositor.clear_overlay(),
-        icon_drawer=_icon_double_back,
+        icon_drawer=_icon_home,
         color_role="fg_accent",
         outline_width=2,
-        icon_factor=0.70,
+        icon_factor=0.65,
     )
 
 
