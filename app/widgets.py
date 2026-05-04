@@ -1331,6 +1331,46 @@ class WifiStatusWidget(Widget):
 # its own colour roles). Anything that wants palette-aware colouring
 # resolves it before the call.
 
+class RenderingIndicatorWidget(Widget):
+    """Small dot painted while the background provider is mid-render.
+
+    Static (no animation) so the compositor doesn't burn cycles
+    re-rendering several times per second while the worker is also
+    doing heavy work — the dot's transition on/off is the signal.
+
+    is_active_src returns True iff the bg provider is currently
+    rendering or last served a stale image. Tied into state_key so the
+    compositor invalidates exactly on the transition."""
+
+    def __init__(self, rect: Rect,
+                 is_active_src: "Callable[[], bool]", *,
+                 color_role: str = "fg_dim"):
+        super().__init__(rect)
+        self._is_active = is_active_src
+        self.color_role = color_role
+
+    def _active(self) -> bool:
+        try:
+            return bool(self._is_active())
+        except Exception:
+            return False
+
+    def state_key(self) -> tuple:
+        return ("ind", self._active())
+
+    def render(self, draw: ImageDraw.ImageDraw, theme: Theme) -> None:
+        if not self._active():
+            return
+        col = color(theme, self.color_role)
+        r = self.rect
+        radius = max(3, min(r.w, r.h) // 2)
+        draw.ellipse(
+            [r.cx - radius, r.cy - radius,
+             r.cx + radius, r.cy + radius],
+            fill=col,
+        )
+
+
 def _icon_back_arrow(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
     """Chevron-style back arrow ("<"), centred in rect."""
     cx, cy = rect.cx, rect.cy

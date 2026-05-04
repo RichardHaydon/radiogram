@@ -58,6 +58,25 @@ class BackgroundService:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._mode, self._overlays, self._center_lon = self._load()
+        # Optional callback fired whenever the user picks new background
+        # params. clockradio.py wires this to world_map.request_prewarm
+        # so the new style starts rendering off-thread immediately —
+        # by the time the user navigates back to the home screen the
+        # image is usually already cached.
+        self._on_change = None
+
+    def set_change_listener(self, fn) -> None:
+        self._on_change = fn
+
+    def _notify_changed(self) -> None:
+        if self._on_change is None:
+            return
+        try:
+            self._on_change()
+        except Exception:
+            # Listener errors must not poison settings persistence —
+            # this is fire-and-forget and best-effort.
+            pass
 
     def _load(self) -> tuple[str, dict[str, bool], float]:
         mode = "none"
@@ -107,6 +126,7 @@ class BackgroundService:
             return
         self._mode = mode
         self._save()
+        self._notify_changed()
 
     def is_overlay(self, name: str) -> bool:
         return self._overlays.get(name, False)
@@ -117,6 +137,7 @@ class BackgroundService:
             return False
         self._overlays[name] = not self._overlays[name]
         self._save()
+        self._notify_changed()
         return self._overlays[name]
 
     def active_overlays(self) -> tuple[str, ...]:
@@ -134,6 +155,7 @@ class BackgroundService:
             return
         self._center_lon = n
         self._save()
+        self._notify_changed()
 
 
 def _normalise_lon(lon: float) -> float:

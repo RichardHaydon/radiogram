@@ -25,6 +25,12 @@ DIM_LEVELS: tuple[int, ...] = (0, 1, 2, 3, 5, 8, 12, 18, 25, 35, 50)
 class BrightnessConfig:
     active_pct: int = 100
     dim_pct: int = 5
+    # Bedside "night red" mode. When True, the rendered image is
+    # tinted toward deep red before being written to the framebuffer:
+    # red preserved, green strongly suppressed, blue near-zero.
+    # Preserves dark adaptation and minimises melatonin disruption
+    # the way an astronomer's red filter does.
+    night_red: bool = False
 
 
 class BrightnessService:
@@ -40,13 +46,15 @@ class BrightnessService:
                 active_pct=_snap(int(d.get("active_pct", 100)),
                                  ACTIVE_LEVELS),
                 dim_pct=_snap(int(d.get("dim_pct", 5)), DIM_LEVELS),
+                night_red=bool(d.get("night_red", False)),
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return BrightnessConfig()
 
     def _save(self) -> None:
         d = {"active_pct": self._cfg.active_pct,
-             "dim_pct": self._cfg.dim_pct}
+             "dim_pct": self._cfg.dim_pct,
+             "night_red": self._cfg.night_red}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(d, indent=2))
         os.replace(tmp, self.path)
@@ -59,15 +67,26 @@ class BrightnessService:
         new = _step(self._cfg.active_pct, direction, ACTIVE_LEVELS)
         if new != self._cfg.active_pct:
             self._cfg = BrightnessConfig(
-                active_pct=new, dim_pct=self._cfg.dim_pct)
+                active_pct=new, dim_pct=self._cfg.dim_pct,
+                night_red=self._cfg.night_red)
             self._save()
 
     def step_dim(self, direction: int) -> None:
         new = _step(self._cfg.dim_pct, direction, DIM_LEVELS)
         if new != self._cfg.dim_pct:
             self._cfg = BrightnessConfig(
-                active_pct=self._cfg.active_pct, dim_pct=new)
+                active_pct=self._cfg.active_pct, dim_pct=new,
+                night_red=self._cfg.night_red)
             self._save()
+
+    def toggle_night_red(self) -> bool:
+        self._cfg = BrightnessConfig(
+            active_pct=self._cfg.active_pct,
+            dim_pct=self._cfg.dim_pct,
+            night_red=not self._cfg.night_red,
+        )
+        self._save()
+        return self._cfg.night_red
 
 
 def _snap(v: int, levels: tuple[int, ...]) -> int:

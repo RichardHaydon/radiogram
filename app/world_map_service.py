@@ -343,6 +343,16 @@ class WorldMapService:
         self._cache_lock = threading.Lock()
         self._warmer_stop = threading.Event()
         self._warmer_thread: threading.Thread | None = None
+        # In-flight render coordination. When a settings scene fires
+        # request_prewarm() for new params, _inflight_params tracks
+        # those params so a parallel current_image() call doesn't
+        # duplicate the work — it just waits on _inflight_done. Cleared
+        # by the worker once it stashes the result (or the user changes
+        # params again before the worker finishes; in that case the
+        # old worker's result is silently discarded).
+        self._inflight_params: tuple | None = None
+        self._inflight_done = threading.Event()
+        self._inflight_done.set()  # idle = "no render in flight"
         self._land_mask = self._load_binary_mask(LAND_PNG)
         self._coast_mask = self._compute_coast_mask(self._land_mask)
         # Terrain alphas: blurred to soften polygon boundaries, then
@@ -491,6 +501,69 @@ class WorldMapService:
         return (self._bucket_now(), style_name, tuple(overlays),
                 int(round(center_lon)))
 
+    def is_rendering(self) -> bool:
+        """True while an eager / pre-warm render is in flight. Scenes
+        use this to show a small "updating" indicator over a stale
+        background while the worker finishes."""
+        with self._cache_lock:
+            return self._inflight_params is not None
+
+    def current_image_nonblocking(
+            self, theme,
+            style_name: str = "slate",
+            overlays: tuple[str, ...] = (),
+            center_lon: float = 0.0,
+            ) -> tuple[Image.Image | None, bool]:
+        """Like current_image() but never blocks the caller.
+
+        Returns (img, is_stale). If the requested params are already
+        cached the answer is fresh (is_stale=False). If they're not,
+        the call kicks off an eager render and returns the most recent
+        cached image — even if it's for a different bucket / style /
+        params — with is_stale=True. The caller can paint the stale
+        image and overlay an "updating" hint until the next render
+        cycle picks up the fresh result.
+
+        On first boot before any image has been rendered, returns
+        (None, True). Callers should fall back to a solid bg in that
+        case (Scene._make_canvas already handles None providers)."""
+        del theme
+        style = STYLES.get(style_name, SLATE)
+        ovs_key = tuple(overlays)
+        cl_key = int(round(center_lon))
+        bucket = self._bucket_now()
+        cache_key = (bucket, style.name, ovs_key, cl_key)
+        with self._cache_lock:
+            # Hot path — exact match in main slot.
+            if (cache_key == (self._cached_bucket, self._cached_style,
+                              self._cached_overlays,
+                              self._cached_center_lon)
+                    and self._cached_image is not None):
+                return self._cached_image, False
+            # Pre-warm slot match — promote and serve fresh.
+            if (cache_key == (self._next_bucket, self._next_style,
+                              self._next_overlays,
+                              self._next_center_lon)
+                    and self._next_image is not None):
+                img = self._next_image
+                self._cached_bucket = self._next_bucket
+                self._cached_style = self._next_style
+                self._cached_overlays = self._next_overlays
+                self._cached_center_lon = self._next_center_lon
+                self._cached_image = img
+                self._next_image = None
+                self._next_bucket = -1
+                return img, False
+            # Stale fallback: serve whatever is in the main cache slot
+            # so the UI doesn't flash a solid bg colour. The caller
+            # uses is_stale=True to overlay the updating hint.
+            stale = self._cached_image
+            need_render = self._inflight_params != cache_key
+        if need_render:
+            # Outside the lock — request_prewarm acquires it itself.
+            self.request_prewarm(style_name, overlays, center_lon)
+        return stale, True
+
     def current_image(self, theme,
                       style_name: str = "slate",
                       overlays: tuple[str, ...] = (),
@@ -529,10 +602,30 @@ class WorldMapService:
                 self._next_image = None
                 self._next_bucket = -1
                 return img
+            # In-flight render with matching params? Wait for it
+            # rather than start a duplicate. Settings scenes call
+            # request_prewarm() the moment the user picks a new style,
+            # so by the time the user navigates back to home this
+            # branch usually trips and the wait is short (or zero).
+            inflight_event = None
+            if self._inflight_params == cache_key:
+                inflight_event = self._inflight_done
             # Cache miss — fall through to a synchronous render below.
             # Must drop the lock first; _render is expensive and we
             # don't want to block the warmer. The masks + style data
             # it reads are immutable after __init__.
+        if inflight_event is not None:
+            # 10s ceiling guards against a worker that died silently —
+            # we still want some image on screen, even if it means a
+            # synchronous render after the timeout.
+            if inflight_event.wait(timeout=10.0):
+                with self._cache_lock:
+                    if (cache_key == (self._cached_bucket,
+                                      self._cached_style,
+                                      self._cached_overlays,
+                                      self._cached_center_lon)
+                            and self._cached_image is not None):
+                        return self._cached_image
         try:
             img = self._render(style, set(overlays), float(center_lon))
         except Exception as exc:
@@ -572,6 +665,76 @@ class WorldMapService:
         if self._warmer_thread is not None:
             self._warmer_thread.join(timeout=2.0)
             self._warmer_thread = None
+
+    def request_prewarm(self, style_name: str,
+                        overlays: tuple[str, ...] = (),
+                        center_lon: float = 0.0) -> None:
+        """Eagerly start rendering this style+overlays+lon for the
+        current minute on a daemon thread.
+
+        Settings scenes call this the moment the user picks new params.
+        By the time they navigate back to the home screen the result
+        is usually already cached — eliminating the perceived lag of a
+        synchronous render on the main thread.
+
+        No-op if the requested params are already cached or already in
+        flight. Calling with new params while a previous prewarm is
+        running is fine: the running worker keeps going but its result
+        will be discarded once it finishes (params no longer match)."""
+        style = STYLES.get(style_name, SLATE)
+        ovs_key = tuple(overlays)
+        cl_key = int(round(center_lon))
+        bucket = self._bucket_now()
+        target = (bucket, style.name, ovs_key, cl_key)
+        with self._cache_lock:
+            if (target == (self._cached_bucket, self._cached_style,
+                           self._cached_overlays,
+                           self._cached_center_lon)
+                    and self._cached_image is not None):
+                return
+            if self._inflight_params == target:
+                return
+            self._inflight_params = target
+            self._inflight_done.clear()
+        threading.Thread(
+            target=self._eager_render, args=(target,),
+            daemon=True, name="map-eager").start()
+
+    def _eager_render(self, target: tuple) -> None:
+        """Worker for request_prewarm. Renders, then promotes into the
+        main cache slot iff the user hasn't switched to different params
+        meanwhile (which would mean _inflight_params got overwritten)."""
+        bucket, style_name, ovs, cl_key = target
+        style = STYLES.get(style_name, SLATE)
+        try:
+            img = self._render(style, set(ovs), float(cl_key))
+        except Exception as exc:
+            print(f"map eager render failed: {exc}",
+                  file=sys.stderr, flush=True)
+            with self._cache_lock:
+                if self._inflight_params == target:
+                    self._inflight_params = None
+                    self._inflight_done.set()
+            return
+        with self._cache_lock:
+            if self._inflight_params == target:
+                self._cached_bucket = bucket
+                self._cached_style = style_name
+                self._cached_overlays = ovs
+                self._cached_center_lon = cl_key
+                self._cached_image = img
+                # Stale pre-warm slot for these new params — let the
+                # minute-boundary warmer recompute on its next tick.
+                if (self._next_style != style_name
+                        or self._next_overlays != ovs
+                        or self._next_center_lon != cl_key):
+                    self._next_image = None
+                    self._next_bucket = -1
+                self._inflight_params = None
+                self._inflight_done.set()
+            # Else: user switched params before we finished. A different
+            # eager render is already in flight; our result is silently
+            # discarded.
 
     def _warmer_loop(self) -> None:
         while not self._warmer_stop.wait(self.WARMER_TICK_S):

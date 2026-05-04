@@ -143,19 +143,48 @@ class Display:
             stride = w * (bpp // 8)
         return w, h, bpp, stride
 
-    def present(self, img: Image.Image) -> None:
+    def present(self, img: Image.Image,
+                rgb_scale: tuple[float, float, float]
+                = (1.0, 1.0, 1.0)) -> None:
+        # `rgb_scale` is per-channel multipliers in 0..1 applied just
+        # before the RGB565 pack. Used for two things:
+        #   - software dim below the panel's hardware backlight floor
+        #     (all three channels get the same factor),
+        #   - night-red mode (red preserved, green/blue strongly
+        #     suppressed) for bedside use.
+        # Most frames pass (1, 1, 1) and the multiply path is skipped.
         if self.rotation_ccw:
             img = img.rotate(self.rotation_ccw, expand=True)
         os.lseek(self._fb_fd, 0, os.SEEK_SET)
-        os.write(self._fb_fd, self._pack(img))
+        os.write(self._fb_fd, self._pack(img, rgb_scale))
 
-    def _pack(self, img: Image.Image) -> bytes:
+    def _pack(self, img: Image.Image,
+              rgb_scale: tuple[float, float, float]
+              = (1.0, 1.0, 1.0)) -> bytes:
         expected_stride = self.fb_w * (self.fb_bpp // 8)
+        rs, gs, bs = (max(0.0, min(1.0, float(v))) for v in rgb_scale)
+        # Skip-fast path: every channel at 1.0 means the user is in
+        # active mode with no night-red, so frame-cost stays exactly
+        # what it was before the dim/tint pipeline existed.
+        tint_active = rs < 0.999 or gs < 0.999 or bs < 0.999
         if self.fb_bpp == 32:
+            if tint_active:
+                # 32-bit path isn't used on the Pi 3 panel (bpp=16) but
+                # keep parity for portability — per-channel multiply
+                # via numpy, then back to a PIL image.
+                arr = np.asarray(img.convert("RGBA"), dtype=np.uint16)
+                arr[..., 0] = (arr[..., 0] * rs).astype(np.uint16)
+                arr[..., 1] = (arr[..., 1] * gs).astype(np.uint16)
+                arr[..., 2] = (arr[..., 2] * bs).astype(np.uint16)
+                img = Image.fromarray(arr.astype(np.uint8), "RGBA")
             raw = img.convert("RGBA").tobytes("raw", "BGRA")
         elif self.fb_bpp == 16:
             # RGB888 -> RGB565 via numpy (vectorised; per-pixel python is ~5s/frame)
             arr = np.asarray(img.convert("RGB"), dtype=np.uint16)
+            if tint_active:
+                arr[..., 0] = (arr[..., 0] * rs).astype(np.uint16)
+                arr[..., 1] = (arr[..., 1] * gs).astype(np.uint16)
+                arr[..., 2] = (arr[..., 2] * bs).astype(np.uint16)
             rgb565 = (
                 ((arr[..., 0] & 0xF8) << 8)
                 | ((arr[..., 1] & 0xFC) << 3)
@@ -416,6 +445,17 @@ class Compositor:
         self._touch = touch
         self._overlay: str | None = None
         self._last_key: tuple | None = None
+        # Cached scene image + the last brightness quantum we presented
+        # at. tick() re-renders the scene only when state_key changes,
+        # but re-presents whenever brightness has shifted enough to be
+        # visible — that lets the dim fade animate smoothly without
+        # paying for a full scene re-render every frame.
+        self._cached_image: Image.Image | None = None
+        self._last_scale_q: tuple[int, int, int] = (-1, -1, -1)
+        # Latest rgb-scale target tick() observed. dispatch_tap reads
+        # it for the press-feedback frame so the flash respects dim
+        # and the night-red tint.
+        self._rgb_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
         self._tap_lockout_until: float = 0.0
         # Hold-state: the button currently under a stable press, when
         # we last fired an auto-repeat, and a flag the tap dispatcher
@@ -460,7 +500,9 @@ class Compositor:
 
     # --- frame + dispatch ---------------------------------------------
 
-    def tick(self) -> None:
+    def tick(self,
+             rgb_scale: tuple[float, float, float]
+             = (1.0, 1.0, 1.0)) -> None:
         # Drive auto-repeat from the touch state BEFORE rendering so
         # any state mutations (e.g. an alarm hour bumped while held)
         # land in this frame's repaint.
@@ -472,9 +514,26 @@ class Compositor:
         theme_v = (self._theme_service.version
                    if self._theme_service is not None else 0)
         key = (id(scene), theme_v) + scene.state_key()
+        # Latest rgb-scale target — dispatch_tap reads this for the
+        # press-flash frame so the flash respects dim + night-red.
+        self._rgb_scale = rgb_scale
+        scale_q = tuple(round(v * 256) for v in rgb_scale)
         if key != self._last_key:
+            # Scene changed: render once, present once. Cache the image
+            # so subsequent dim/tint fades can re-present it without
+            # re-rendering the scene.
             self._last_key = key
-            self.display.present(scene.render())
+            self._cached_image = scene.render()
+            self._last_scale_q = scale_q
+            self.display.present(self._cached_image, rgb_scale)
+            return
+        # Scene unchanged. Re-present only if the rgb-scale has moved
+        # by at least one quantum step on any channel — keeps the
+        # framebuffer write off the hot path when the tint is steady.
+        if (self._cached_image is not None
+                and scale_q != self._last_scale_q):
+            self._last_scale_q = scale_q
+            self.display.present(self._cached_image, rgb_scale)
 
     def _drive_hold_repeat(self) -> None:
         """Poll TouchReader for stable-hold state and fire on_press on
@@ -595,7 +654,11 @@ class Compositor:
         # state, not a stuck-pressed visual.
         btn._pressed = True
         try:
-            self.display.present(scene.render())
+            # Press-flash frame respects the latest rgb-scale so a tap
+            # in dim mode (after the wake-only first contact) doesn't
+            # blast a fully-bright flash onto the dark-adapted user,
+            # and a tap with night-red on stays red.
+            self.display.present(scene.render(), self._rgb_scale)
         except Exception as exc:
             print(f"press-flash render: {exc}",
                   file=sys.stderr, flush=True)
@@ -666,16 +729,27 @@ def main() -> int:
         def __init__(self, bg_svc, wm_svc):
             self._bg = bg_svc
             self._wm = wm_svc
+            # Whether the most recent __call__ returned a stale image —
+            # surfaced via is_rendering() so scenes can show the
+            # "updating" indicator without re-querying the map service.
+            self._was_stale = False
 
         def __call__(self, theme):
             style = self._bg.style_name()
-            if style is not None:
-                ovs = self._bg.active_overlays()
-                cl = self._bg.center_lon
-                return self._wm.current_image(
-                    theme, style_name=style, overlays=ovs,
-                    center_lon=cl)
-            return None
+            if style is None:
+                self._was_stale = False
+                return None
+            ovs = self._bg.active_overlays()
+            cl = self._bg.center_lon
+            # Nonblocking path: returns the latest cached image (which
+            # may be for the previous params) plus a stale flag. The
+            # main render loop never blocks on a 2–4s map render —
+            # instead the previous map stays visible until the eager
+            # worker finishes and the next frame sees a fresh cache.
+            img, stale = self._wm.current_image_nonblocking(
+                theme, style_name=style, overlays=ovs, center_lon=cl)
+            self._was_stale = stale
+            return img
 
         def style_name(self):
             # Surface the current map style so scenes can adjust their
@@ -684,16 +758,46 @@ def main() -> int:
             # stays unobstructed.
             return self._bg.style_name()
 
+        def is_rendering(self):
+            """True iff the bg image we last served was stale OR a
+            worker is currently rendering. Either case means scenes
+            should show the small 'updating' indicator."""
+            if self._was_stale:
+                return True
+            return self._wm.is_rendering()
+
         def state_key(self):
             style = self._bg.style_name()
             if style is not None:
                 ovs = self._bg.active_overlays()
                 cl = self._bg.center_lon
-                return (("world_map", style)
+                # Including is_rendering() in the state_key forces the
+                # compositor to re-render on every transition (start /
+                # end of a worker render) so the indicator dot toggles
+                # without the user touching anything.
+                rendering = self._wm.is_rendering()
+                return (("world_map", style, rendering)
                         + self._wm.state_key(style, ovs, cl))
             return ("none",)
 
     bg_provider = _BackgroundProvider(background, world_map)
+
+    # Eager pre-warm: any time the user picks a new style / overlay /
+    # center-longitude in settings, kick off the render of the new
+    # params right away on the warmer thread. By the time the user
+    # navigates back to the home screen the result is usually cached,
+    # killing the synchronous render lag that otherwise showed up the
+    # first time the home scene rebuilt.
+    def _on_bg_changed():
+        style = background.style_name()
+        if style is None:
+            return
+        world_map.request_prewarm(
+            style,
+            background.active_overlays(),
+            background.center_lon,
+        )
+    background.set_change_listener(_on_bg_changed)
 
     # IdleScene now needs compositor (alarm preview tap) + wifi_service
     # (header glyph), so it's built alongside the other compositor-aware
@@ -799,22 +903,52 @@ def main() -> int:
         compositor=compositor, background_service=background,
     )
 
-    # Brightness preferences are stored in percent so the same config
-    # makes sense across different panel max_brightness values; resolve
-    # to sysfs levels here, refreshed each frame so user changes apply
-    # without a service restart.
-    def active_level() -> int:
-        return max(1, int(backlight.maximum
-                          * brightness.config.active_pct / 100))
+    # Brightness preferences are stored in percent. Each frame we
+    # resolve the target percent to a (backlight_level, software_factor)
+    # pair: above the panel's hardware floor (1/max ≈ 3.2%) the
+    # backlight does the dimming and software stays at 1.0; below it
+    # the backlight pins at 1 and a software RGB multiplier takes
+    # over so the user can dim further than the panel firmware allows.
+    # That's the bedside-clock fix — the previous code just truncated
+    # to backlight=0 below ~3% so 5% was the dimmest visible setting.
+    HW_FLOOR = 1.0 / max(1, backlight.maximum)        # ≈ 0.032 on Pi 7"
+    SW_FLOOR = 0.10                                   # never go pitch-black
+    # Night-red weights: red kept full, green strongly suppressed,
+    # blue near-zero — the astronomers' deep-red filter approximation.
+    # Values picked so dim tones still read (e.g. fg_dim text doesn't
+    # vanish) but the screen no longer emits the blue/green wavelengths
+    # that disrupt melatonin and dark adaptation.
+    NIGHT_R = 1.00
+    NIGHT_G = 0.10
+    NIGHT_B = 0.04
 
-    def idle_dim_level() -> int:
-        return max(0, int(backlight.maximum
-                          * brightness.config.dim_pct / 100))
+    def active_target() -> tuple[int, float]:
+        pct = brightness.config.active_pct
+        target = max(0.0, min(1.0, pct / 100.0))
+        if target >= HW_FLOOR:
+            return max(1, int(round(target * backlight.maximum))), 1.0
+        return 1, max(SW_FLOOR, target / HW_FLOOR)
+
+    def idle_dim_target() -> tuple[int, float]:
+        pct = brightness.config.dim_pct
+        if pct <= 0:
+            return 0, 1.0
+        target = max(0.0, min(1.0, pct / 100.0))
+        if target >= HW_FLOOR:
+            return max(1, int(round(target * backlight.maximum))), 1.0
+        return 1, max(SW_FLOOR, target / HW_FLOOR)
 
     last_input_t = time.monotonic()
-    current_b = float(active_level())
-    target_b = active_level()
-    fade_step = max(1.0, backlight.maximum / (FADE_DURATION_S * FRAME_RATE))
+    init_b, init_sw = active_target()
+    current_b = float(init_b)
+    target_b = init_b
+    current_sw = float(init_sw)
+    target_sw = init_sw
+    fade_step = max(
+        1.0, backlight.maximum / (FADE_DURATION_S * FRAME_RATE))
+    # Software fade in 0..1 units. Same total duration as the backlight
+    # fade so the two animate in sync visually.
+    fade_step_sw = 1.0 / max(1.0, FADE_DURATION_S * FRAME_RATE)
 
     running = True
 
@@ -827,13 +961,17 @@ def main() -> int:
 
     try:
         while running:
-            active = active_level()
+            active_b, active_sw = active_target()
             for ev in touch.poll():
                 last_input_t = time.monotonic()
-                target_b = active
+                target_b, target_sw = active_b, active_sw
                 # Suppress actions if screen was dim — first contact only
-                # wakes; user must touch a lit screen to act.
-                was_dim = current_b < active * 0.5
+                # wakes; user must touch a lit screen to act. The was_dim
+                # check uses the backlight level so it still trips
+                # correctly even when the dim state is achieved via
+                # software multiplier (backlight pinned at 1).
+                was_dim = (current_b < max(active_b, 2) * 0.5
+                           or current_sw < 0.5)
                 if was_dim:
                     continue
                 if ev.kind == "tap":
@@ -842,12 +980,12 @@ def main() -> int:
                     compositor.dispatch_swipe(ev.direction, ev.cx, ev.cy)
 
             if time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
-                target_b = idle_dim_level()
+                target_b, target_sw = idle_dim_target()
             else:
                 # Track the (possibly-just-edited) active level even when
                 # there's no fresh touch — otherwise BrightnessScene
                 # changes wouldn't apply until the next tap.
-                target_b = active
+                target_b, target_sw = active_b, active_sw
 
             if abs(current_b - target_b) > 0.5:
                 if current_b < target_b:
@@ -856,7 +994,25 @@ def main() -> int:
                     current_b = max(float(target_b), current_b - fade_step)
                 backlight.write(int(round(current_b)))
 
-            compositor.tick()
+            if abs(current_sw - target_sw) > 0.005:
+                if current_sw < target_sw:
+                    current_sw = min(float(target_sw),
+                                     current_sw + fade_step_sw)
+                else:
+                    current_sw = max(float(target_sw),
+                                     current_sw - fade_step_sw)
+
+            # Bake the current dim multiplier into per-channel weights.
+            # Night-red strips most of green/blue; otherwise all three
+            # channels share the same scalar (effectively scalar dim).
+            if brightness.config.night_red:
+                rgb_scale = (current_sw * NIGHT_R,
+                             current_sw * NIGHT_G,
+                             current_sw * NIGHT_B)
+            else:
+                rgb_scale = (current_sw, current_sw, current_sw)
+
+            compositor.tick(rgb_scale=rgb_scale)
             time.sleep(1.0 / FRAME_RATE)
 
     finally:

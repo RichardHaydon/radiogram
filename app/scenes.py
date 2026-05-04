@@ -21,9 +21,10 @@ from theme import Theme, color
 from widgets import (
     AppTile, BellIconWidget, Button, CheckboxRow, ClockWidget,
     ColorPairWidget, DateWidget, IconButton, IconRow, LAUNCHER_ICONS,
-    Rect, SETTINGS_ICONS, TextWidget, TwoLineText, WeatherIconWidget,
-    Widget, WifiStatusWidget, WrappedTextWidget, _icon_back_arrow,
-    _icon_chevron_down, _icon_chevron_up, _icon_home,
+    Rect, RenderingIndicatorWidget, SETTINGS_ICONS, TextWidget,
+    TwoLineText, WeatherIconWidget, Widget, WifiStatusWidget,
+    WrappedTextWidget, _icon_back_arrow, _icon_chevron_down,
+    _icon_chevron_up, _icon_home,
 )
 
 
@@ -121,6 +122,35 @@ def _back_button(canvas_w: int, head_h: int, on_press) -> IconButton:
         color_role="fg_accent",
         outline_width=2,
         icon_factor=0.65,
+    )
+
+
+def _rendering_indicator(scene: "Scene", canvas_w: int,
+                         canvas_h: int) -> RenderingIndicatorWidget:
+    """Small dot in the canvas top-right corner that appears while a
+    background render is in flight. Same widget plugged into Idle /
+    Radio / AlarmFiring so the visual cue is consistent across home
+    modes. Reads the scene's _background_provider lazily — provider is
+    attached after construction in clockradio.main()."""
+    size = max(10, int(min(canvas_w, canvas_h) * 0.022))
+    pad = max(8, int(min(canvas_w, canvas_h) * 0.020))
+
+    def _active() -> bool:
+        bg = getattr(scene, "_background_provider", None)
+        if bg is None:
+            return False
+        fn = getattr(bg, "is_rendering", None)
+        if fn is None:
+            return False
+        try:
+            return bool(fn())
+        except Exception:
+            return False
+
+    return RenderingIndicatorWidget(
+        Rect(canvas_w - pad - size, pad, size, size),
+        is_active_src=_active,
+        color_role="fg_dim",
     )
 
 
@@ -386,6 +416,9 @@ class IdleScene(Scene):
         _add_transport_footer(self, mpd_service, station_service,
                               canvas_w, canvas_h, x_offset=alarm_w)
 
+        # "Updating bg" indicator — paints last so it sits on top.
+        self.add(_rendering_indicator(self, canvas_w, canvas_h))
+
     def on_tap(self, cx: float, cy: float) -> bool:
         """Tap on empty area (clock or map background) → open Apps.
         Tap on the alarm pill / transport buttons keeps its own action.
@@ -502,6 +535,9 @@ class RadioScene(Scene):
         ))
         _add_transport_footer(self, mpd_service, station_service,
                               canvas_w, canvas_h)
+
+        # "Updating bg" indicator — paints last so it sits on top.
+        self.add(_rendering_indicator(self, canvas_w, canvas_h))
 
     def on_tap(self, cx: float, cy: float) -> bool:
         """Same empty-area-tap-to-Apps as IdleScene so the gesture is
@@ -746,7 +782,7 @@ class SettingsScene(Scene):
                 label_src=label,
                 on_press=action,
                 icon_drawer=SETTINGS_ICONS.get(icon_name),
-                font_factor=0.42,
+                font_factor=0.55,
                 color_role="fg_bright",
                 icon_color_role="fg_accent",
             ))
@@ -818,7 +854,7 @@ class ThemeScene(Scene):
                 Rect(btn_x, row_y, btn_w, row_h),
                 label_src=label,
                 on_press=lambda n=t.name: self._apply(n),
-                font_factor=0.34,
+                font_factor=0.55,
                 color_role=color_role,
             )
             self.widgets.append(sw)
@@ -1981,6 +2017,9 @@ class AlarmFiringScene(Scene):
             halo=True,
         ))
 
+        # "Updating bg" indicator — paints last so it sits on top.
+        self.add(_rendering_indicator(self, canvas_w, canvas_h))
+
 
 def _local_ip() -> str:
     """Best-effort local IP for the About screen. We don't actually send
@@ -2097,6 +2136,20 @@ class BrightnessScene(Scene):
             minus=lambda: self._svc.step_dim(-1),
             plus=lambda: self._svc.step_dim(+1),
         )
+        # Bedside "night red" toggle. Tints the rendered image toward
+        # deep red so the panel emits as little blue/green as possible
+        # — preserves dark adaptation and minimises melatonin
+        # disruption when the panel is glanced at in the dark.
+        nr_y = body_top + 2 * band_h + int(body_h * 0.08)
+        nr_h = band_h - int(body_h * 0.04)
+        self.add(CheckboxRow(
+            Rect(int(canvas_w * 0.10), nr_y,
+                 int(canvas_w * 0.80), nr_h),
+            label_src="Night red",
+            is_on_src=lambda: self._svc.config.night_red,
+            on_press=lambda: self._svc.toggle_night_red(),
+            font_factor=0.40,
+        ))
 
     def _build_setting(self, *, label: str, band_y: int, band_h: int,
                        value_fn, minus, plus) -> None:
@@ -2326,11 +2379,17 @@ class BackgroundScene(Scene):
         ("annotations", "Latitudes & Terminator"),
     )
 
+    # MAX_ROWS keeps each cell big enough that font_factor=0.55 reads
+    # comfortably at bedside distance. Total items (6 styles + 5
+    # overlays + 1 centre = 12) splits into exactly 2 pages.
+    MAX_ROWS = 6
+
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor, background_service):
         super().__init__(theme, canvas_w, canvas_h)
         self._compositor = compositor
         self._bg = background_service
+        self._page = 0
         head_h = int(canvas_h * 0.10)
         self._head_h = head_h
         self.add(_back_button(
@@ -2338,14 +2397,79 @@ class BackgroundScene(Scene):
             on_press=lambda: compositor.set_overlay("settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
+        # Title trimmed so the page indicator + chevron buttons fit on
+        # the right side of the header (matches StationListScene).
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
-                 int(canvas_w * 0.66), head_h),
+                 int(canvas_w * 0.50), head_h),
             text_src="Background",
             font_factor=0.55,
             color_role="fg_dim",
         ))
+        btn_h = int(head_h * 0.80)
+        btn_w = btn_h
+        right_pad = int(canvas_w * 0.025)
+        gap = int(canvas_w * 0.012)
+        down_x = canvas_w - right_pad - btn_w
+        up_x = down_x - btn_w - gap
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.58), 0,
+                 up_x - int(canvas_w * 0.58) - gap, head_h),
+            text_src=self._page_label,
+            font_factor=0.40,
+            color_role="fg_dim",
+        ))
+        self.add(IconButton(
+            Rect(up_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_up,
+            icon_drawer=_icon_chevron_up,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
+        ))
+        self.add(IconButton(
+            Rect(down_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_down,
+            icon_drawer=_icon_chevron_down,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
+        ))
         self._rows: list = []
+
+    def _items(self) -> list[tuple]:
+        """Flat ordered list of selectable rows. Style radios first
+        (page 1), then overlays + Centre (page 2). Tagged tuples so
+        _rebuild_rows can dispatch to the right widget per kind."""
+        items: list[tuple] = []
+        for mode, label in self.STYLES:
+            items.append(("style", mode, label))
+        for name, label in self.OVERLAYS:
+            items.append(("overlay", name, label))
+        items.append(("centre",))
+        return items
+
+    def _max_page(self) -> int:
+        n = len(self._items())
+        if n <= self.MAX_ROWS:
+            return 0
+        return (n - 1) // self.MAX_ROWS
+
+    def _page_label(self) -> str:
+        n = len(self._items())
+        if n <= self.MAX_ROWS:
+            return ""
+        total = self._max_page() + 1
+        page = min(self._page, total - 1)
+        return f"{page + 1}/{total}"
+
+    def _page_up(self) -> None:
+        if self._page > 0:
+            self._page -= 1
+
+    def _page_down(self) -> None:
+        if self._page < self._max_page():
+            self._page += 1
 
     def _set_mode(self, mode: str) -> None:
         self._bg.set_mode(mode)
@@ -2365,97 +2489,69 @@ class BackgroundScene(Scene):
             except ValueError:
                 pass
         self._rows.clear()
-        # Single column, portrait-friendly: full-width rows so the
-        # label has room to render at a readable size. 5 styles + 5
-        # overlays + 1 "Map Centre" navigation = 11 option rows plus
-        # two compact section labels.
+        # Pagination layout: each page shows up to MAX_ROWS items at a
+        # readable cell height. Section labels are dropped — the row
+        # widget shape (radio dot vs checkbox vs button outline) plus
+        # the natural page break between styles and overlays carries
+        # the grouping clearly enough.
+        items = self._items()
+        max_p = self._max_page()
+        if self._page > max_p:
+            self._page = max_p
         body_top = self._head_h + int(self.canvas_h * 0.02)
         body_h = self.canvas_h - body_top - int(self.canvas_h * 0.02)
-        label_h = int(self.canvas_h * 0.045)
-        gap = int(self.canvas_h * 0.012)
-        # Gaps: between body_top and label, after label, between
-        # sections (×2), before centre button. Total 5 gaps.
-        rows_h = body_h - 2 * label_h - 5 * gap
-        row_h = max(28, rows_h // 11)
+        cell_h = body_h // self.MAX_ROWS
         margin_x = int(self.canvas_w * 0.05)
         content_w = self.canvas_w - 2 * margin_x
-        # Section 1: STYLE — radio (exclusive). Labels use a narrow
-        # left-anchored rect so the centered text reads as left-aligned
-        # over the option rows below (rather than floating mid-screen).
-        label_w = int(content_w * 0.45)
-        y = body_top
-        self._add_label(margin_x, y, label_w, label_h, "Style")
-        y += label_h + gap
-        for mode, label in self.STYLES:
-            self._add_check(
-                x=margin_x, y=y, w=content_w, h=row_h,
-                label=label,
-                shape="radio",
-                is_on_src=(lambda m=mode: self._bg.mode == m),
-                on_press=(lambda m=mode: self._set_mode(m)),
-            )
-            y += row_h
-        # Section 2: OVERLAYS — checkboxes (independent / combinable).
-        # Overlays only apply atop a world map; dim when mode == "none"
-        # so the dependency is visible.
-        y += gap
-        self._add_label(margin_x, y, label_w, label_h, "Overlays")
-        y += label_h + gap
-        for name, label in self.OVERLAYS:
-            self._add_check(
-                x=margin_x, y=y, w=content_w, h=row_h,
-                label=label,
-                shape="check",
-                is_on_src=(lambda n=name: self._bg.is_overlay(n)),
-                on_press=(lambda n=name: self._toggle_overlay(n)),
-                disabled_src=(lambda n=name:
-                              self._bg.mode == "none" or n == "clouds"),
-            )
-            y += row_h
-        # Section 3: MAP CENTRE — single navigation row that opens the
-        # picker. Disabled when no map is selected.
-        y += gap
-        centre_btn = Button(
-            Rect(margin_x, y, content_w, row_h),
-            label_src=lambda: f"Centre: {_format_centre_lon(self._bg.center_lon)}  ▸",
-            on_press=lambda: self._compositor.set_overlay("map_center"),
-            font_factor=0.42,
-            color_role=("fg_dim" if self._bg.mode == "none"
-                        else "fg_bright"),
-            outline_width=1,
-        )
-        self.widgets.append(centre_btn)
-        self._rows.append(centre_btn)
-
-    def _add_label(self, x: int, y: int, w: int, h: int,
-                   text: str) -> None:
-        widget = TextWidget(
-            Rect(x, y, w, h),
-            text_src=text,
-            font_factor=0.55,
-            color_role="fg_subtle",
-        )
-        self.widgets.append(widget)
-        self._rows.append(widget)
-
-    def _add_check(self, *, x: int, y: int, w: int, h: int,
-                   label: str, shape: str, is_on_src, on_press,
-                   disabled_src=None) -> None:
-        row = CheckboxRow(
-            Rect(x, y, w, h),
-            label_src=label,
-            on_press=on_press,
-            is_on_src=is_on_src,
-            shape=shape,
-            font_factor=0.6,
-            disabled_src=disabled_src,
-        )
-        self.widgets.append(row)
-        self._rows.append(row)
+        start = self._page * self.MAX_ROWS
+        page_items = items[start:start + self.MAX_ROWS]
+        for i, item in enumerate(page_items):
+            row_y = body_top + i * cell_h
+            row_h = cell_h - 8
+            kind = item[0]
+            if kind == "style":
+                _, mode, label = item
+                row = CheckboxRow(
+                    Rect(margin_x, row_y, content_w, row_h),
+                    label_src=label,
+                    on_press=(lambda m=mode: self._set_mode(m)),
+                    is_on_src=(lambda m=mode: self._bg.mode == m),
+                    shape="radio",
+                    font_factor=0.55,
+                )
+            elif kind == "overlay":
+                _, name, label = item
+                row = CheckboxRow(
+                    Rect(margin_x, row_y, content_w, row_h),
+                    label_src=label,
+                    on_press=(lambda n=name: self._toggle_overlay(n)),
+                    is_on_src=(lambda n=name: self._bg.is_overlay(n)),
+                    shape="check",
+                    font_factor=0.55,
+                    disabled_src=(lambda n=name:
+                                  self._bg.mode == "none"
+                                  or n == "clouds"),
+                )
+            else:                                    # "centre"
+                row = Button(
+                    Rect(margin_x, row_y, content_w, row_h),
+                    label_src=lambda: (
+                        f"Centre: "
+                        f"{_format_centre_lon(self._bg.center_lon)}  ▸"
+                    ),
+                    on_press=lambda: self._compositor.set_overlay(
+                        "map_center"),
+                    font_factor=0.50,
+                    color_role=("fg_dim" if self._bg.mode == "none"
+                                else "fg_bright"),
+                    outline_width=1,
+                )
+            self.widgets.append(row)
+            self._rows.append(row)
 
     def state_key(self) -> tuple:
         return (self._bg.mode, self._bg.active_overlays(),
-                int(round(self._bg.center_lon)))
+                int(round(self._bg.center_lon)), self._page)
 
     def render(self) -> Image.Image:
         self._rebuild_rows()
