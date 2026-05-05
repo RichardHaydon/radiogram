@@ -878,15 +878,20 @@ class ThemeScene(Scene):
 class WifiScene(Scene):
     """Overlay: current connection + scanned networks list. Tap a row to
     attempt connect — if a profile already exists nmcli reuses it; for
-    new secured networks step 2 will hand off to a password scene."""
+    new secured networks step 2 will hand off to a password scene.
 
-    MAX_ROWS = 5
+    Long lists page in MAX_ROWS-sized chunks via ▲/▼ buttons in the
+    header right; page indicator (e.g. "2/3") sits just left of them
+    and is hidden when the whole list fits on one page."""
+
+    MAX_ROWS = 6
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor, wifi_service):
         super().__init__(theme, canvas_w, canvas_h)
         self._compositor = compositor
         self._wifi = wifi_service
+        self._page = 0
         head_h = int(canvas_h * 0.12)
         self._head_h = head_h
         self.add(_back_button(
@@ -896,17 +901,50 @@ class WifiScene(Scene):
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
-                 int(canvas_w * 0.36), head_h),
+                 int(canvas_w * 0.22), head_h),
             text_src="Wifi",
             font_factor=0.55,
             color_role="fg_dim",
         ))
+        # RESCAN moved leftward to make room for the page indicator
+        # and ▲/▼ paging buttons on the right edge.
         self.add(Button(
-            Rect(int(canvas_w * 0.74), int(head_h * 0.10),
-                 int(canvas_w * 0.24), int(head_h * 0.80)),
+            Rect(int(canvas_w * 0.44), int(head_h * 0.10),
+                 int(canvas_w * 0.20), int(head_h * 0.80)),
             label_src="RESCAN",
             on_press=lambda: wifi_service.rescan(),
             font_factor=0.42,
+        ))
+        # Paging affordances: same right-anchored pattern as
+        # StationListScene / BackgroundScene for visual consistency.
+        btn_h = int(head_h * 0.80)
+        btn_w = btn_h
+        right_pad = int(canvas_w * 0.025)
+        gap = int(canvas_w * 0.012)
+        down_x = canvas_w - right_pad - btn_w
+        up_x = down_x - btn_w - gap
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.66), 0,
+                 up_x - int(canvas_w * 0.66) - gap, head_h),
+            text_src=self._page_label,
+            font_factor=0.40,
+            color_role="fg_dim",
+        ))
+        self.add(IconButton(
+            Rect(up_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_up,
+            icon_drawer=_icon_chevron_up,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
+        ))
+        self.add(IconButton(
+            Rect(down_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_down,
+            icon_drawer=_icon_chevron_down,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
         ))
         # Status line
         stat_h = int(canvas_h * 0.10)
@@ -930,6 +968,28 @@ class WifiScene(Scene):
         if s.ssid:
             return f"On: {s.ssid}   {s.signal}%   {s.ip}"
         return f"Not connected ({s.state})"
+
+    def _max_page(self) -> int:
+        n = len(self._wifi.status.networks)
+        if n <= self.MAX_ROWS:
+            return 0
+        return (n - 1) // self.MAX_ROWS
+
+    def _page_label(self) -> str:
+        n = len(self._wifi.status.networks)
+        if n <= self.MAX_ROWS:
+            return ""
+        total = self._max_page() + 1
+        page = min(self._page, total - 1)
+        return f"{page + 1}/{total}"
+
+    def _page_up(self) -> None:
+        if self._page > 0:
+            self._page -= 1
+
+    def _page_down(self) -> None:
+        if self._page < self._max_page():
+            self._page += 1
 
     def _on_pick(self, ssid: str, security: str) -> None:
         s = self._wifi.status
@@ -963,6 +1023,10 @@ class WifiScene(Scene):
         body_top = self._head_h + self._stat_h + int(self.canvas_h * 0.02)
         body_h = self.canvas_h - body_top - int(self.canvas_h * 0.02)
         nets = list(self._wifi.status.networks)
+        # Clamp page if a fresh scan returned fewer networks than before.
+        max_p = self._max_page()
+        if self._page > max_p:
+            self._page = max_p
         if not nets:
             empty = TextWidget(
                 Rect(0, body_top, self.canvas_w, body_h),
@@ -974,8 +1038,10 @@ class WifiScene(Scene):
             self.widgets.append(empty)
             self._row_widgets.append(empty)
             return
+        start = self._page * self.MAX_ROWS
+        page_nets = nets[start:start + self.MAX_ROWS]
         cell_h = body_h // self.MAX_ROWS
-        for i, n in enumerate(nets[:self.MAX_ROWS]):
+        for i, n in enumerate(page_nets):
             mark = "▶ " if n.in_use else "  "
             sec = n.security or "open"
             label = f"{mark}{n.ssid}   {n.signal}%   {sec}"
@@ -998,6 +1064,7 @@ class WifiScene(Scene):
             s.ssid, s.signal, s.state, s.ip, s.busy, s.last_error,
             tuple((n.ssid, n.signal, n.in_use, n.security)
                   for n in s.networks),
+            self._page,
         )
 
     def render(self) -> Image.Image:
