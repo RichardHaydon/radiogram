@@ -922,15 +922,10 @@ def main() -> int:
     NIGHT_G = 0.10
     NIGHT_B = 0.04
 
-    def active_target() -> tuple[int, float]:
-        pct = brightness.config.active_pct
-        target = max(0.0, min(1.0, pct / 100.0))
-        if target >= HW_FLOOR:
-            return max(1, int(round(target * backlight.maximum))), 1.0
-        return 1, max(SW_FLOOR, target / HW_FLOOR)
-
-    def idle_dim_target() -> tuple[int, float]:
-        pct = brightness.config.dim_pct
+    def _resolve(pct: int) -> tuple[int, float]:
+        """Map a percent target to (backlight_level, sw_factor) using
+        the panel's hardware floor — shared by both active and dim
+        target functions."""
         if pct <= 0:
             return 0, 1.0
         target = max(0.0, min(1.0, pct / 100.0))
@@ -938,12 +933,28 @@ def main() -> int:
             return max(1, int(round(target * backlight.maximum))), 1.0
         return 1, max(SW_FLOOR, target / HW_FLOOR)
 
+    def active_target() -> tuple[int, tuple[float, float, float]]:
+        # Active mode is never tinted — full colour even when night_red
+        # is enabled. The red bias only kicks in once we've gone idle,
+        # which is the bedside-glance scenario.
+        bl, sw = _resolve(brightness.config.active_pct)
+        return bl, (sw, sw, sw)
+
+    def idle_dim_target() -> tuple[int, tuple[float, float, float]]:
+        bl, sw = _resolve(brightness.config.dim_pct)
+        if brightness.config.night_red:
+            return bl, (sw * NIGHT_R, sw * NIGHT_G, sw * NIGHT_B)
+        return bl, (sw, sw, sw)
+
     last_input_t = time.monotonic()
-    init_b, init_sw = active_target()
+    init_b, init_rgb = active_target()
     current_b = float(init_b)
     target_b = init_b
-    current_sw = float(init_sw)
-    target_sw = init_sw
+    # Per-channel RGB scale. Faded toward target_rgb each frame so the
+    # transition into / out of night-red animates over the same
+    # duration as the backlight fade — no jarring colour pop.
+    current_rgb: list[float] = list(init_rgb)
+    target_rgb: tuple[float, float, float] = init_rgb
     fade_step = max(
         1.0, backlight.maximum / (FADE_DURATION_S * FRAME_RATE))
     # Software fade in 0..1 units. Same total duration as the backlight
@@ -961,17 +972,17 @@ def main() -> int:
 
     try:
         while running:
-            active_b, active_sw = active_target()
+            active_b, active_rgb = active_target()
             for ev in touch.poll():
                 last_input_t = time.monotonic()
-                target_b, target_sw = active_b, active_sw
+                target_b, target_rgb = active_b, active_rgb
                 # Suppress actions if screen was dim — first contact only
                 # wakes; user must touch a lit screen to act. The was_dim
-                # check uses the backlight level so it still trips
-                # correctly even when the dim state is achieved via
-                # software multiplier (backlight pinned at 1).
+                # check uses the backlight level + the red channel
+                # (always == sw, never tinted) so it still trips
+                # correctly when dim is achieved via software multiplier.
                 was_dim = (current_b < max(active_b, 2) * 0.5
-                           or current_sw < 0.5)
+                           or current_rgb[0] < 0.5)
                 if was_dim:
                     continue
                 if ev.kind == "tap":
@@ -980,12 +991,12 @@ def main() -> int:
                     compositor.dispatch_swipe(ev.direction, ev.cx, ev.cy)
 
             if time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
-                target_b, target_sw = idle_dim_target()
+                target_b, target_rgb = idle_dim_target()
             else:
                 # Track the (possibly-just-edited) active level even when
                 # there's no fresh touch — otherwise BrightnessScene
                 # changes wouldn't apply until the next tap.
-                target_b, target_sw = active_b, active_sw
+                target_b, target_rgb = active_b, active_rgb
 
             if abs(current_b - target_b) > 0.5:
                 if current_b < target_b:
@@ -994,25 +1005,20 @@ def main() -> int:
                     current_b = max(float(target_b), current_b - fade_step)
                 backlight.write(int(round(current_b)))
 
-            if abs(current_sw - target_sw) > 0.005:
-                if current_sw < target_sw:
-                    current_sw = min(float(target_sw),
-                                     current_sw + fade_step_sw)
-                else:
-                    current_sw = max(float(target_sw),
-                                     current_sw - fade_step_sw)
+            # Fade each RGB channel toward its target independently —
+            # going active→dim with night_red enabled is a non-uniform
+            # transition (R stays high, G+B drop sharply) and per-channel
+            # interpolation lets the colour shift animate smoothly.
+            for i in range(3):
+                if abs(current_rgb[i] - target_rgb[i]) > 0.005:
+                    if current_rgb[i] < target_rgb[i]:
+                        current_rgb[i] = min(float(target_rgb[i]),
+                                             current_rgb[i] + fade_step_sw)
+                    else:
+                        current_rgb[i] = max(float(target_rgb[i]),
+                                             current_rgb[i] - fade_step_sw)
 
-            # Bake the current dim multiplier into per-channel weights.
-            # Night-red strips most of green/blue; otherwise all three
-            # channels share the same scalar (effectively scalar dim).
-            if brightness.config.night_red:
-                rgb_scale = (current_sw * NIGHT_R,
-                             current_sw * NIGHT_G,
-                             current_sw * NIGHT_B)
-            else:
-                rgb_scale = (current_sw, current_sw, current_sw)
-
-            compositor.tick(rgb_scale=rgb_scale)
+            compositor.tick(rgb_scale=tuple(current_rgb))
             time.sleep(1.0 / FRAME_RATE)
 
     finally:

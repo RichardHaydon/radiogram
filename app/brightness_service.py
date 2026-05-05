@@ -15,9 +15,16 @@ from pathlib import Path
 
 # Ordered ladders rather than a fixed step. Dim crowds levels near zero
 # because the useful bedside range (just-visible glow at night) lives in
-# the bottom 5% — a uniform 10% step skips right over it. Active is
-# coarser since the day-use range is less twitchy.
-ACTIVE_LEVELS: tuple[int, ...] = (10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+# the bottom 5% — a uniform 10% step skips right over it. Active gets
+# the same low entries (1, 2, 3, 5) so the user can dial active mode
+# right down for late-night interaction without flipping into idle dim.
+# Levels below the panel's hardware backlight floor (~3% on Pi 7") rely
+# on the software RGB multiplier in clockradio.Display to actually
+# achieve the perceived intensity — without it 1/2/3 would all just
+# round down to backlight=0 (off).
+ACTIVE_LEVELS: tuple[int, ...] = (
+    1, 2, 3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
+)
 DIM_LEVELS: tuple[int, ...] = (0, 1, 2, 3, 5, 8, 12, 18, 25, 35, 50)
 
 
