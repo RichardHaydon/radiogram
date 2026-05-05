@@ -24,7 +24,7 @@ from widgets import (
     Rect, RenderingIndicatorWidget, SETTINGS_ICONS, TextWidget,
     TwoLineText, WeatherIconWidget, Widget, WifiStatusWidget,
     WrappedTextWidget, _icon_back_arrow, _icon_chevron_down,
-    _icon_chevron_up, _icon_home,
+    _icon_chevron_up,
 )
 
 
@@ -172,28 +172,32 @@ def _scene_bg_is_globe(scene: "Scene") -> bool:
         return False
 
 
-def _home_button(canvas_w: int, head_h: int, compositor) -> IconButton:
-    """House-glyph "go to home" button, placed next to the back arrow
-    on every overlay. Always clears all overlays back to the
-    underlying idle/radio scene — a one-tap escape from a deep nav
-    stack (e.g. Settings → Wifi → password keyboard back to clock).
-    The house silhouette reads as "home" rather than "more back" the
-    way the previous double-chevron did."""
+def _home_button(canvas_w: int, head_h: int, compositor) -> Button:
+    """"HOME" text button, placed next to the back arrow on every
+    overlay. Always clears all overlays back to the underlying idle/
+    radio scene — a one-tap escape from a deep nav stack (e.g.
+    Settings → Wifi → password keyboard back to clock). Was a house-
+    glyph icon; the small drawing was hard to read at bedside distance
+    so it's now the literal word, matching the other all-caps action
+    buttons in the UI (RESCAN, OK, ADD…)."""
     btn_h = int(head_h * 0.80)
-    btn_w = btn_h
+    # Slightly wider than square so "HOME" fits comfortably without
+    # cramping the title that sits at canvas_w*0.20.
+    btn_w = int(head_h * 1.10)
     # Sit just to the right of the back button. Back is at x=0.025
-    # with width ~btn_w; this one starts at x=0.025 + btn_w/canvas_w
-    # plus a small gap.
-    back_end = int(canvas_w * 0.025) + btn_w
+    # with width = head_h*0.80 (square); this starts past it with a
+    # small gap.
+    back_w = int(head_h * 0.80)
+    back_end = int(canvas_w * 0.025) + back_w
     gap = int(canvas_w * 0.012)
-    return IconButton(
+    return Button(
         Rect(back_end + gap, int(head_h * 0.10),
              btn_w, btn_h),
+        label_src="HOME",
         on_press=lambda: compositor.clear_overlay(),
-        icon_drawer=_icon_home,
+        font_factor=0.42,
         color_role="fg_accent",
         outline_width=2,
-        icon_factor=0.65,
     )
 
 
