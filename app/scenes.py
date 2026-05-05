@@ -2442,13 +2442,12 @@ class BackgroundScene(Scene):
         ("city_lights", "City Lights"),
         ("water", "Lakes & Rivers"),
         ("political", "Political Borders"),
-        ("clouds", "Clouds (live) — soon"),
         ("annotations", "Latitudes & Terminator"),
     )
 
     # MAX_ROWS keeps each cell big enough that font_factor=0.55 reads
-    # comfortably at bedside distance. Total items (6 styles + 5
-    # overlays + 1 centre = 12) splits into exactly 2 pages.
+    # comfortably at bedside distance. Total items (6 styles + 4
+    # overlays + 1 centre = 11) splits into 2 pages (6 + 5).
     MAX_ROWS = 6
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
@@ -2542,11 +2541,6 @@ class BackgroundScene(Scene):
         self._bg.set_mode(mode)
 
     def _toggle_overlay(self, name: str) -> None:
-        # Clouds overlay isn't wired yet — silently no-op so the toggle
-        # can sit on the screen without misleading the user. Will go
-        # live once a cloud-cover service is added.
-        if name == "clouds":
-            return
         self._bg.toggle_overlay(name)
 
     def _rebuild_rows(self) -> None:
@@ -2595,9 +2589,7 @@ class BackgroundScene(Scene):
                     is_on_src=(lambda n=name: self._bg.is_overlay(n)),
                     shape="check",
                     font_factor=0.55,
-                    disabled_src=(lambda n=name:
-                                  self._bg.mode == "none"
-                                  or n == "clouds"),
+                    disabled_src=(lambda: self._bg.mode == "none"),
                 )
             else:                                    # "centre"
                 row = Button(

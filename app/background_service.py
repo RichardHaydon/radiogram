@@ -6,7 +6,7 @@ Three independent dimensions:
 - mode: a single base style (none / world_map_slate / atlas / vintage /
   blueprint). One choice at a time.
 - overlays: zero or more layers painted on top of the base map (city
-  lights, water features, political borders, clouds, annotations).
+  lights, water features, political borders, annotations).
   Independent toggles, can stack.
 - center_lon: the longitude (degrees) shown at the horizontal centre
   of the map. Defaults to 0 (Greenwich). Decoupled from system
@@ -43,14 +43,13 @@ VALID_OVERLAYS = (
     "city_lights",
     "water",
     "political",
-    "clouds",
     "annotations",
 )
 
 # Older configs may have saved overlays that have since been retired or
 # renamed. On load we silently drop unknown keys; this keeps the file
 # stable rather than rewriting users' choices behind their back.
-RETIRED_OVERLAYS = ("timezones",)
+RETIRED_OVERLAYS = ("timezones", "clouds")
 
 
 class BackgroundService:
