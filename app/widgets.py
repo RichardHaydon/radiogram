@@ -1512,6 +1512,23 @@ def _icon_wifi_full(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
     _icon_wifi(draw, rect, col, connected=True)
 
 
+def _icon_play(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Play arrow inside a circle — used as the DEMO settings-row glyph."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.09))
+    r = s * 0.85
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                 outline=col, width=w)
+    tri = s * 0.42
+    pts = [
+        (cx - tri * 0.50, cy - tri),
+        (cx - tri * 0.50, cy + tri),
+        (cx + tri * 0.85, cy),
+    ]
+    draw.polygon(pts, fill=col)
+
+
 # Settings-list icon table — referenced by name from SettingsScene so
 # the row labels and their glyphs stay together as a single mapping.
 SETTINGS_ICONS = {
@@ -1520,6 +1537,7 @@ SETTINGS_ICONS = {
     "palette": _icon_palette,
     "globe": _icon_globe,
     "brightness": _icon_brightness,
+    "play": _icon_play,
     "info": _icon_info,
 }
 

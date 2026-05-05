@@ -53,12 +53,13 @@ from verse_service import VerseService
 from weather_service import WeatherService
 from wifi_service import WifiService
 from world_map_service import WorldMapService
+from demo_service import CaptionOverlay, DemoService
 from scenes import (
     AboutScene, AlarmEditScene, AlarmFiringScene, AlarmListScene,
-    AudioOutputScene, BackgroundScene, BrightnessScene, IdleScene,
-    LauncherScene, MapCenterScene, QuickPanelScene, RadioScene,
-    SettingsScene, StationListScene, ThemeScene, VerseScene,
-    WeatherScene, WifiPasswordScene, WifiScene,
+    AudioOutputScene, BackgroundScene, BrightnessScene, DemoIntroScene,
+    IdleScene, LauncherScene, MapCenterScene, QuickPanelScene,
+    RadioScene, SettingsScene, StationListScene, ThemeScene,
+    VerseScene, WeatherScene, WifiPasswordScene, WifiScene,
 )
 
 
@@ -451,6 +452,11 @@ class Compositor:
         self._touch = touch
         self._overlay: str | None = None
         self._last_key: tuple | None = None
+        # Optional guided-tour wiring. When the demo is active the
+        # compositor paints a translucent caption band over the picked
+        # scene and re-routes taps so only EXIT / NEXT can fire.
+        self._demo = None
+        self._demo_overlay = None
         # Cached scene image + the last brightness quantum we presented
         # at. tick() re-renders the scene only when state_key changes,
         # but re-presents whenever brightness has shifted enough to be
@@ -472,6 +478,12 @@ class Compositor:
         self._held_did_repeat = False
         self._next_repeat_at: float = 0.0
         self._repeat_count: int = 0
+
+    # --- demo wiring --------------------------------------------------
+
+    def attach_demo(self, demo, demo_overlay) -> None:
+        self._demo = demo
+        self._demo_overlay = demo_overlay
 
     # --- overlay control ----------------------------------------------
 
@@ -519,7 +531,13 @@ class Compositor:
         # Theme version forces a repaint when the user picks a new theme.
         theme_v = (self._theme_service.version
                    if self._theme_service is not None else 0)
-        key = (id(scene), theme_v) + scene.state_key()
+        # Demo step index is part of the key so each tour step forces a
+        # repaint — the underlying scene's state_key may not change
+        # (e.g. three consecutive idle steps that just swap captions).
+        demo_idx = (self._demo.step_index
+                    if self._demo is not None and self._demo.is_active
+                    else -1)
+        key = (id(scene), theme_v, demo_idx) + scene.state_key()
         # Latest rgb-scale target — dispatch_tap reads this for the
         # press-flash frame so the flash respects dim + night-red.
         self._rgb_scale = rgb_scale
@@ -529,7 +547,21 @@ class Compositor:
             # so subsequent dim/tint fades can re-present it without
             # re-rendering the scene.
             self._last_key = key
-            self._cached_image = scene.render()
+            raw = scene.render()
+            # Bake the demo caption into the cached image while the
+            # tour is active. Doing it here (rather than on every
+            # present()) lets fade-only re-presents reuse the cached
+            # composite without paying for re-compositing per frame.
+            if (self._demo is not None and self._demo.is_active
+                    and self._demo_overlay is not None):
+                try:
+                    theme = (self._theme_service.current
+                             if self._theme_service is not None else None)
+                    self._demo_overlay.render(raw, theme)
+                except Exception as exc:
+                    print(f"demo overlay render: {exc}",
+                          file=sys.stderr, flush=True)
+            self._cached_image = raw
             self._last_scale_q = scale_q
             self.display.present(self._cached_image, rgb_scale)
             return
@@ -549,6 +581,12 @@ class Compositor:
         skip the trailing on_press — otherwise lifting the finger
         after a long hold would tack on one more action."""
         if self._touch is None:
+            return
+        # Demo mode swallows underlying-scene buttons (only EXIT / NEXT
+        # in the caption fire), so hold-to-repeat is irrelevant here
+        # and leaving it on would arm a stuck-press visual on whatever
+        # button the finger happened to land on.
+        if self._demo is not None and self._demo.is_active:
             return
         held = self._touch.held_position()
         now = time.monotonic()
@@ -609,6 +647,9 @@ class Compositor:
         direction is ignored — overlays are dismissed via their
         back-arrow button only, and we want zero ambiguity over the
         firing alarm screen."""
+        # Demo runs the show — no swipe gestures while it's driving.
+        if self._demo is not None and self._demo.is_active:
+            return False
         if direction != "up":
             return False
         # Only accept swipe-up on the home screens — over an open
@@ -627,6 +668,22 @@ class Compositor:
         # screen area in the freshly-presented scene.
         now = time.monotonic()
         if now < self._tap_lockout_until:
+            return False
+        # Demo intercepts the entire input plane: the only buttons
+        # that fire are EXIT / NEXT inside the caption band. Every
+        # other tap is swallowed so the tour isn't derailed by a
+        # stray touch on an underlying-scene button.
+        if (self._demo is not None and self._demo.is_active
+                and self._demo_overlay is not None):
+            action = self._demo_overlay.hit(cx, cy)
+            self._tap_lockout_until = now + self.TAP_LOCKOUT_S
+            self._last_key = None
+            if action == "exit":
+                self._demo.exit()
+                return True
+            if action == "next":
+                self._demo.next_step()
+                return True
             return False
         # If the hold path already auto-repeated during this press,
         # the user has already gotten N actions out of this gesture
@@ -909,6 +966,20 @@ def main() -> int:
         compositor=compositor, background_service=background,
     )
 
+    # Guided demo — the service drives compositor.set_overlay() each
+    # step; the caption overlay is composited onto the cached scene
+    # image during tick(). Snapshots/restores background so the tour
+    # never leaves the user's settings changed.
+    demo = DemoService(background_service=background)
+    demo.attach(compositor)
+    demo_caption = CaptionOverlay(display.canvas_w, display.canvas_h)
+    demo_caption.attach(demo)
+    compositor.attach_demo(demo, demo_caption)
+    scenes["demo_intro"] = DemoIntroScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, demo_service=demo,
+    )
+
     # Brightness preferences are stored in percent. Each frame we
     # resolve the target percent to a (backlight_level, software_factor)
     # pair: above the panel's hardware floor (1/max ≈ 3.2%) the
@@ -1040,6 +1111,10 @@ def main() -> int:
                         current_rgb[i] = max(float(target_rgb[i]),
                                              current_rgb[i] - fade_step_sw)
 
+            # Advance the guided tour before painting so a step
+            # transition (which calls set_overlay) lands in this
+            # frame's render rather than the next one.
+            demo.tick()
             compositor.tick(rgb_scale=tuple(current_rgb))
             time.sleep(1.0 / FRAME_RATE)
 

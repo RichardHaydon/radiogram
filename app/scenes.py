@@ -773,6 +773,8 @@ class SettingsScene(Scene):
              lambda: compositor.set_overlay("background"), "globe"),
             ("BRIGHTNESS",
              lambda: compositor.set_overlay("brightness"), "brightness"),
+            ("DEMO",
+             lambda: compositor.set_overlay("demo_intro"), "play"),
             ("ABOUT",
              lambda: compositor.set_overlay("about"), "info"),
         ]
@@ -2148,8 +2150,13 @@ class AboutScene(Scene):
             (lambda: f"Stations  {len(station_service.stations)}"),
             (lambda: f"MPD     {mpd_service.status.state}"),
         ]
+        # Reserve the bottom slice of the body for a "RUN GUIDED TOUR"
+        # button — info rows live above it.
         body_top = head_h + int(canvas_h * 0.04)
-        body_h = canvas_h - body_top - int(canvas_h * 0.04)
+        full_body_h = canvas_h - body_top - int(canvas_h * 0.04)
+        tour_btn_h = int(canvas_h * 0.10)
+        tour_gap = int(canvas_h * 0.03)
+        body_h = full_body_h - tour_btn_h - tour_gap
         # Reserve room for ~8 rows so layout doesn't wobble if we add more.
         cell_h = body_h // max(len(rows), 8)
         for i, src in enumerate(rows):
@@ -2161,6 +2168,19 @@ class AboutScene(Scene):
                 font_factor=0.42,
                 color_role="fg_dim",
             ))
+        # Tour launcher — a second entry point for the demo, placed
+        # here because About is where someone evaluating "what is this
+        # thing?" naturally lands.
+        tour_w = int(canvas_w * 0.66)
+        tour_x = (canvas_w - tour_w) // 2
+        tour_y = body_top + full_body_h - tour_btn_h
+        self.add(Button(
+            Rect(tour_x, tour_y, tour_w, tour_btn_h),
+            label_src="RUN GUIDED TOUR",
+            on_press=lambda: compositor.set_overlay("demo_intro"),
+            font_factor=0.40,
+            color_role="fg_accent",
+        ))
 
 
 class BrightnessScene(Scene):
@@ -2734,3 +2754,113 @@ class MapCenterScene(Scene):
     def hit(self, cx: float, cy: float) -> Button | None:
         self._rebuild_rows()
         return super().hit(cx, cy)
+
+
+class DemoIntroScene(Scene):
+    """Pre-tour configuration screen. Two questions are asked up front
+    (length + whether to include the wifi setup walkthrough); START
+    hands the chosen options to DemoService and the rest of the tour
+    runs unattended."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, demo_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._demo = demo_service
+        self._full = True
+        self._include_wifi = True
+        head_h = int(canvas_h * 0.14)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
+            text_src="Demo Tour",
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+
+        body_top = head_h + int(canvas_h * 0.03)
+        action_band_h = int(canvas_h * 0.16)
+        action_band_y = canvas_h - action_band_h - int(canvas_h * 0.03)
+        body_h = action_band_y - body_top
+        desc_h = int(body_h * 0.26)
+        self.add(WrappedTextWidget(
+            Rect(int(canvas_w * 0.06), body_top,
+                 int(canvas_w * 0.88), desc_h),
+            text_src=("A guided tour walks through the world map, "
+                      "themes, brightness, wifi, radio, alarms, "
+                      "weather and verse. Your current settings are "
+                      "restored when the tour ends."),
+            font_size=max(18, int(canvas_h * 0.026)),
+            color_role="fg_dim",
+        ))
+
+        opts_top = body_top + desc_h + int(body_h * 0.04)
+        opts_avail_h = body_h - desc_h - int(body_h * 0.04)
+        row_h = int(opts_avail_h * 0.28)
+        gap = int(opts_avail_h * 0.04)
+        margin_x = int(canvas_w * 0.10)
+        row_w = canvas_w - 2 * margin_x
+        y = opts_top
+        self.add(CheckboxRow(
+            Rect(margin_x, y, row_w, row_h),
+            label_src="Full tour (~75 sec)",
+            is_on_src=lambda: self._full,
+            on_press=lambda: self._set_full(True),
+            shape="radio",
+            font_factor=0.42,
+        ))
+        y += row_h + gap
+        self.add(CheckboxRow(
+            Rect(margin_x, y, row_w, row_h),
+            label_src="Short tour (~50 sec)",
+            is_on_src=lambda: not self._full,
+            on_press=lambda: self._set_full(False),
+            shape="radio",
+            font_factor=0.42,
+        ))
+        y += row_h + gap
+        self.add(CheckboxRow(
+            Rect(margin_x, y, row_w, row_h),
+            label_src="Include wifi setup",
+            is_on_src=lambda: self._include_wifi,
+            on_press=self._toggle_wifi,
+            shape="check",
+            font_factor=0.42,
+        ))
+
+        btn_pad = int(canvas_w * 0.04)
+        btn_w = (canvas_w - 3 * btn_pad) // 2
+        self.add(Button(
+            Rect(btn_pad, action_band_y, btn_w, action_band_h),
+            label_src="CANCEL",
+            on_press=lambda: compositor.set_overlay("settings"),
+            font_factor=0.42,
+        ))
+        self.add(Button(
+            Rect(canvas_w - btn_pad - btn_w, action_band_y,
+                 btn_w, action_band_h),
+            label_src="START",
+            on_press=self._start,
+            font_factor=0.42,
+            color_role="fg_bright",
+        ))
+
+    def _set_full(self, v: bool) -> None:
+        self._full = v
+
+    def _toggle_wifi(self) -> None:
+        self._include_wifi = not self._include_wifi
+
+    def _start(self) -> None:
+        self._demo.start(
+            length="full" if self._full else "short",
+            include_wifi=self._include_wifi,
+        )
+
+    def state_key(self) -> tuple:
+        return super().state_key() + (self._full, self._include_wifi)
