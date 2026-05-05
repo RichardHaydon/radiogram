@@ -91,7 +91,13 @@ BACKLIGHT_GLOB = "/sys/class/backlight/*/brightness"
 # --- behaviour --------------------------------------------------------
 IDLE_TIMEOUT_S = 30.0
 FRAME_RATE = 5
-FADE_DURATION_S = 1.0
+# Active↔idle dim is a gentle background transition — long fade.
+# User-driven brightness steps in BrightnessScene want immediate
+# feedback, so a much shorter fade (~one frame at 5fps) effectively
+# snaps to the new level without the chunky multi-frame animation
+# that made stepping feel jerky.
+TRANSITION_FADE_S = 1.0
+STEP_FADE_S = 0.2
 ROTATION_CCW = 90  # CCW canvas → fb. Inverse used for touch hit-test.
 
 # Gesture thresholds (panel pixels, except SWIPE_MAX_S in seconds).
@@ -955,11 +961,12 @@ def main() -> int:
     # duration as the backlight fade — no jarring colour pop.
     current_rgb: list[float] = list(init_rgb)
     target_rgb: tuple[float, float, float] = init_rgb
-    fade_step = max(
-        1.0, backlight.maximum / (FADE_DURATION_S * FRAME_RATE))
-    # Software fade in 0..1 units. Same total duration as the backlight
-    # fade so the two animate in sync visually.
-    fade_step_sw = 1.0 / max(1.0, FADE_DURATION_S * FRAME_RATE)
+    # Mode tracking: "active" while the user is interacting, "dim" once
+    # the idle timeout has elapsed. Mode *transitions* use the slow
+    # fade (gentle bedside dim / wake); within-mode target changes
+    # (BrightnessScene step, night-red toggle) use the fast fade.
+    prev_mode = "active"
+    slow_fade_until = 0.0
 
     running = True
 
@@ -992,11 +999,26 @@ def main() -> int:
 
             if time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
                 target_b, target_rgb = idle_dim_target()
+                target_mode = "dim"
             else:
                 # Track the (possibly-just-edited) active level even when
                 # there's no fresh touch — otherwise BrightnessScene
                 # changes wouldn't apply until the next tap.
                 target_b, target_rgb = active_b, active_rgb
+                target_mode = "active"
+
+            # On a mode flip, arm the slow fade for one full transition
+            # window. While that window is open, fade gently; otherwise
+            # snap (≈ one frame at 5fps) so user-driven step changes
+            # feel responsive.
+            now = time.monotonic()
+            if target_mode != prev_mode:
+                slow_fade_until = now + TRANSITION_FADE_S
+            prev_mode = target_mode
+            fade_s = TRANSITION_FADE_S if now < slow_fade_until else STEP_FADE_S
+            fade_step = max(
+                1.0, backlight.maximum / (fade_s * FRAME_RATE))
+            fade_step_sw = 1.0 / max(1.0, fade_s * FRAME_RATE)
 
             if abs(current_b - target_b) > 0.5:
                 if current_b < target_b:
