@@ -49,6 +49,10 @@ class DemoStep:
     # pre_action signature: (background_service) -> None. Only the
     # background is mutated during the tour (see module docstring).
     pre_action: Optional[Callable] = None
+    # Splash steps render the caption full-screen in big text via
+    # DemoSplashScene; the regular caption band is suppressed so the
+    # message fills the panel iMac-unboxing style.
+    splash: bool = False
 
 
 def _build_steps(*, length: str, include_wifi: bool) -> list[DemoStep]:
@@ -62,14 +66,33 @@ def _build_steps(*, length: str, include_wifi: bool) -> list[DemoStep]:
     full = (length == "full")
     steps: list[DemoStep] = []
 
-    # Intro: home screen with the globe forced on so the user sees
-    # the headline visual feature first regardless of what bg they
-    # had before. Subsequent steps walk through the variants.
+    # Apple-style intro splashes: full-screen large text on a clean
+    # background. The first splash also pre-warms the headline globe
+    # so by the time the tour body opens the home scene the map is
+    # already cached and the user sees the showcase view instantly.
+    steps.append(DemoStep(
+        "demo_splash", 2.5,
+        "Hello.",
+        splash=True,
+        pre_action=lambda bg: bg.set_mode("world_map_globe"),
+    ))
+    steps.append(DemoStep(
+        "demo_splash", 3.0,
+        "Welcome to your clock radio.",
+        splash=True,
+    ))
+    steps.append(DemoStep(
+        "demo_splash", 2.5,
+        "Here's a quick tour.",
+        splash=True,
+    ))
+
+    # Intro: home screen with the globe already on (set by the first
+    # splash's pre_action). Subsequent steps walk through the variants.
     steps.append(DemoStep(
         HOME_SENTINEL, 6.0,
-        "Welcome. This is the clock face — the world map "
-        "shows real-time daylight across the planet.",
-        pre_action=lambda bg: bg.set_mode("world_map_globe"),
+        "This is the clock face — the world map shows real-time "
+        "daylight across the planet.",
     ))
     if full:
         steps.append(DemoStep(
@@ -137,10 +160,17 @@ def _build_steps(*, length: str, include_wifi: bool) -> list[DemoStep]:
             "A daily verse — quiet bedside reading.",
         ))
 
-    # Outro: back home, with closing caption.
+    # Outro: closing splash + a brief moment back on the home scene
+    # with a caption so the user knows their settings were restored
+    # before the tour disappears.
     steps.append(DemoStep(
-        HOME_SENTINEL, 6.0,
-        "That's the tour. Your previous settings have been restored.",
+        "demo_splash", 2.5,
+        "That's the tour.",
+        splash=True,
+    ))
+    steps.append(DemoStep(
+        HOME_SENTINEL, 4.0,
+        "Your previous settings have been restored.",
     ))
     return steps
 
@@ -185,6 +215,16 @@ class DemoService:
     @property
     def step_count(self) -> int:
         return len(self._steps)
+
+    @property
+    def is_splash(self) -> bool:
+        """True when the current step renders its message full-screen
+        via DemoSplashScene; the caption band suppresses itself in
+        that case to avoid a small caption *and* a big splash both
+        showing the same text."""
+        if not self._active or self._idx < 0:
+            return False
+        return self._steps[self._idx].splash
 
     def remaining_s(self) -> float:
         if not self._active or self._idx < 0:
@@ -335,6 +375,11 @@ class CaptionOverlay:
     def render(self, image: Image.Image, theme: Theme) -> None:
         """Composite the caption band onto `image` in-place."""
         if self._service is None or not self._service.is_active:
+            return
+        # Splash steps already display their message full-screen via
+        # DemoSplashScene — overlaying a caption band would be a
+        # repetition + would visually mute the splash effect.
+        if self._service.is_splash:
             return
         # Translucent panel via RGBA paste with self as mask.
         panel = Image.new(

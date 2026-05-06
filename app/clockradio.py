@@ -57,9 +57,9 @@ from demo_service import CaptionOverlay, DemoService
 from scenes import (
     AboutScene, AlarmEditScene, AlarmFiringScene, AlarmListScene,
     AudioOutputScene, BackgroundScene, BrightnessScene, DemoIntroScene,
-    IdleScene, LauncherScene, MapCenterScene, QuickPanelScene,
-    RadioScene, SettingsScene, StationListScene, ThemeScene,
-    VerseScene, WeatherScene, WifiPasswordScene, WifiScene,
+    DemoSplashScene, IdleScene, LauncherScene, MapCenterScene,
+    QuickPanelScene, RadioScene, SettingsScene, StationListScene,
+    ThemeScene, VerseScene, WeatherScene, WifiPasswordScene, WifiScene,
 )
 
 
@@ -92,6 +92,13 @@ BACKLIGHT_GLOB = "/sys/class/backlight/*/brightness"
 # --- behaviour --------------------------------------------------------
 IDLE_TIMEOUT_S = 30.0
 FRAME_RATE = 5
+# Brightness pinning while the guided tour runs. The user's everyday
+# setting is bedside-low (often 5%); a tour at that level is invisible
+# from across the room and would also drift into idle dim halfway
+# through. 60% lands far enough above the panel's hardware floor to
+# look like a deliberate showcase mode and well below 100% so a
+# bedside user isn't blasted if they trigger the demo at night.
+DEMO_BRIGHTNESS_PCT = 60
 # Active↔idle dim is a gentle background transition — long fade.
 # User-driven brightness steps in BrightnessScene want immediate
 # feedback, so a much shorter fade (~one frame at 5fps) effectively
@@ -675,9 +682,17 @@ class Compositor:
         # stray touch on an underlying-scene button.
         if (self._demo is not None and self._demo.is_active
                 and self._demo_overlay is not None):
-            action = self._demo_overlay.hit(cx, cy)
             self._tap_lockout_until = now + self.TAP_LOCKOUT_S
             self._last_key = None
+            # Splash slides have no visible buttons, so a tap anywhere
+            # advances to the next step (Apple-style "tap to continue"
+            # on unboxing screens). EXIT isn't reachable during a
+            # splash — the slides are short and EXIT comes back into
+            # play as soon as the regular caption band returns.
+            if self._demo.is_splash:
+                self._demo.next_step()
+                return True
+            action = self._demo_overlay.hit(cx, cy)
             if action == "exit":
                 self._demo.exit()
                 return True
@@ -979,6 +994,10 @@ def main() -> int:
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, demo_service=demo,
     )
+    scenes["demo_splash"] = DemoSplashScene(
+        theme, display.canvas_w, display.canvas_h,
+        demo_service=demo,
+    )
 
     # Brightness preferences are stored in percent. Each frame we
     # resolve the target percent to a (backlight_level, software_factor)
@@ -1068,7 +1087,18 @@ def main() -> int:
                 elif ev.kind == "swipe":
                     compositor.dispatch_swipe(ev.direction, ev.cx, ev.cy)
 
-            if time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
+            if demo.is_active:
+                # Tour overrides everything: pin the panel to a
+                # showcase level and out of the dim path. The mode
+                # tag is its own value so entering and leaving the
+                # tour both trigger the slow-fade window below
+                # (gentle fade-up to the splash, gentle fade-back
+                # to whatever the user's normal brightness is).
+                bl, sw = _resolve(DEMO_BRIGHTNESS_PCT)
+                target_b = bl
+                target_rgb = (sw, sw, sw)
+                target_mode = "demo"
+            elif time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
                 target_b, target_rgb = idle_dim_target()
                 target_mode = "dim"
             else:

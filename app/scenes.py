@@ -2808,7 +2808,7 @@ class DemoIntroScene(Scene):
         y = opts_top
         self.add(CheckboxRow(
             Rect(margin_x, y, row_w, row_h),
-            label_src="Full tour (~75 sec)",
+            label_src="Full tour (~90 sec)",
             is_on_src=lambda: self._full,
             on_press=lambda: self._set_full(True),
             shape="radio",
@@ -2817,7 +2817,7 @@ class DemoIntroScene(Scene):
         y += row_h + gap
         self.add(CheckboxRow(
             Rect(margin_x, y, row_w, row_h),
-            label_src="Short tour (~50 sec)",
+            label_src="Short tour (~65 sec)",
             is_on_src=lambda: not self._full,
             on_press=lambda: self._set_full(False),
             shape="radio",
@@ -2864,3 +2864,37 @@ class DemoIntroScene(Scene):
 
     def state_key(self) -> tuple:
         return super().state_key() + (self._full, self._include_wifi)
+
+
+class DemoSplashScene(Scene):
+    """Full-bleed centred large-text splash, used by demo splash steps
+    (intro greetings + closing slide). One scene serves all splash
+    captions — the text is sourced from DemoService each render so a
+    step transition just changes which message appears.
+
+    iMac-unboxing aesthetic: solid theme-bg behind big bold centred
+    text, no header, no footer, no chrome. Brightness override in the
+    main loop pins the panel to 60% during the demo so the splash
+    really lands rather than barely glowing at the user's bedside
+    setting."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 demo_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._demo = demo_service
+        # Vertical band ~80% of canvas, padded sides. WrappedTextWidget
+        # auto-wraps long captions onto multiple lines and centres
+        # them — short single-word splashes ("Hello.") sit on one line
+        # at the chosen font size; longer ones break naturally.
+        self.add(WrappedTextWidget(
+            Rect(int(canvas_w * 0.06), int(canvas_h * 0.10),
+                 int(canvas_w * 0.88), int(canvas_h * 0.80)),
+            text_src=lambda: self._demo.caption,
+            font_role="bold",
+            font_size=max(56, int(canvas_h * 0.075)),
+            color_role="fg_bright",
+            line_spacing=1.18,
+        ))
+
+    def state_key(self) -> tuple:
+        return (self._demo.caption,)
