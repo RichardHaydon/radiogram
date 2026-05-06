@@ -21,3 +21,12 @@ app/data/lights_orig.jpg
 # Local framebuffer captures and scratch
 tmp/
 fb_*.png
+
+# Sky data — bundle the small derived CSVs in app/data/, but never the
+# bulky upstream catalogues used to generate them. tools/build_sky_data.py
+# documents the regeneration recipe.
+tools/hyg_v42.csv
+tools/hyg_v42.csv.gz
+tools/western_index.json
+tools/smoke_out/
+tools/bg_*.json

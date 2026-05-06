@@ -31,23 +31,57 @@ WX_URL = "https://api.open-meteo.com/v1/forecast"
 USER_AGENT = "clockradio/1.0 (https://github.com/RichardHaydon/radiogram)"
 
 
-# WMO weather interpretation codes — short labels for tight cells.
-WMO_LABELS: dict[int, str] = {
-    0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Cloudy",
-    45: "Fog", 48: "Fog",
-    51: "Drizzle", 53: "Drizzle", 55: "Drizzle",
-    56: "Frz drizzle", 57: "Frz drizzle",
-    61: "Rain", 63: "Rain", 65: "Heavy rain",
-    66: "Frz rain", 67: "Frz rain",
-    71: "Snow", 73: "Snow", 75: "Heavy snow", 77: "Snow",
-    80: "Showers", 81: "Showers", 82: "Heavy showers",
-    85: "Snow showers", 86: "Snow showers",
-    95: "Storm", 96: "Storm + hail", 99: "Storm + hail",
+# WMO weather interpretation codes — i18n keys, resolved at render time
+# so a language switch updates without re-fetching.
+WMO_KEYS: dict[int, str] = {
+    0: "weather.code.clear",
+    1: "weather.code.mostly_clear",
+    2: "weather.code.partly_cloudy",
+    3: "weather.code.cloudy",
+    45: "weather.code.fog", 48: "weather.code.fog",
+    51: "weather.code.drizzle",
+    53: "weather.code.drizzle",
+    55: "weather.code.drizzle",
+    56: "weather.code.frz_drizzle",
+    57: "weather.code.frz_drizzle",
+    61: "weather.code.rain",
+    63: "weather.code.rain",
+    65: "weather.code.heavy_rain",
+    66: "weather.code.frz_rain",
+    67: "weather.code.frz_rain",
+    71: "weather.code.snow",
+    73: "weather.code.snow",
+    75: "weather.code.heavy_snow",
+    77: "weather.code.snow",
+    80: "weather.code.showers",
+    81: "weather.code.showers",
+    82: "weather.code.heavy_showers",
+    85: "weather.code.snow_showers",
+    86: "weather.code.snow_showers",
+    95: "weather.code.storm",
+    96: "weather.code.storm_hail",
+    99: "weather.code.storm_hail",
 }
 
 
-def _label(code: int) -> str:
-    return WMO_LABELS.get(int(code), f"Code {code}")
+def label_for_code(code: int) -> str:
+    """Resolve a WMO code to a localised string at the moment of call.
+    Importing i18n_service lazily breaks an otherwise-circular import
+    (weather_service is constructed before main wires the service)."""
+    try:
+        from i18n_service import I18nService  # noqa: F401
+        from scenes import _t                  # already wired in main
+        key = WMO_KEYS.get(int(code))
+        if key is not None:
+            return _t(key)
+        return _t("weather.code.unknown", code=code)
+    except Exception:
+        # Fallback to English if anything in the i18n layer is missing.
+        from translations import EN
+        key = WMO_KEYS.get(int(code))
+        if key is not None:
+            return EN.get(key, "")
+        return f"Code {code}"
 
 
 @dataclass(frozen=True)
@@ -194,7 +228,7 @@ class WeatherService:
                 days.append(DayForecast(
                     date=str(dates[i]),
                     code=code,
-                    label=_label(code),
+                    label=label_for_code(code),
                     high_c=float(hi[i]),
                     low_c=float(lo[i]),
                     precip_pct=pct,
@@ -208,7 +242,11 @@ class WeatherService:
             busy=False,
             cur_temp_c=float(cur.get("temperature_2m", 0.0)),
             cur_code=cur_code,
-            cur_label=_label(cur_code),
+            # cur_label resolved at render time via label_for_code so a
+            # language switch updates the displayed label without a new
+            # fetch — kept as a snapshot here purely for back-compat
+            # with anyone reading status.cur_label directly.
+            cur_label=label_for_code(cur_code),
             cur_wind_kmh=float(cur.get("wind_speed_10m", 0.0)),
             days=tuple(days),
         )

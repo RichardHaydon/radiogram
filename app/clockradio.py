@@ -44,6 +44,7 @@ from alarm import AlarmStore
 from alarm_service import AlarmService
 from background_service import BackgroundService
 from brightness_service import BrightnessService
+from i18n_service import I18nService
 from mpd_service import MPDService
 from station_service import StationService
 from stations import StationStore
@@ -54,12 +55,14 @@ from weather_service import WeatherService
 from wifi_service import WifiService
 from world_map_service import WorldMapService
 from demo_service import CaptionOverlay, DemoService
+import scenes as _scenes_mod
 from scenes import (
     AboutScene, AlarmEditScene, AlarmFiringScene, AlarmListScene,
     AudioOutputScene, BackgroundScene, BrightnessScene, DemoIntroScene,
-    DemoSplashScene, IdleScene, LauncherScene, MapCenterScene,
-    QuickPanelScene, RadioScene, SettingsScene, StationListScene,
-    ThemeScene, VerseScene, WeatherScene, WifiPasswordScene, WifiScene,
+    DemoSplashScene, IdleScene, LanguageScene, LauncherScene,
+    MapCenterScene, QuickPanelScene, RadioScene, SettingsScene,
+    StationListScene, ThemeScene, VerseScene, WeatherScene,
+    WifiPasswordScene, WifiScene,
 )
 
 
@@ -124,6 +127,7 @@ VERSE_PATH = Path("/var/lib/clockradio/verse.json")
 THEME_PATH = Path("/var/lib/clockradio/theme.json")
 BRIGHTNESS_PATH = Path("/var/lib/clockradio/brightness.json")
 BACKGROUND_PATH = Path("/var/lib/clockradio/background.json")
+LANGUAGE_PATH = Path("/var/lib/clockradio/language.json")
 # Default alarm sound. Slice 3c will add chime fallback for offline.
 ALARM_URL = "https://nwm.streamguys1.com/faith/playlist.m3u8"
 
@@ -788,6 +792,14 @@ def main() -> int:
     alarms = AlarmService(alarm_store, mpd, alarm_url=ALARM_URL)
     alarms.start()
 
+    # i18n must come before any Scene is constructed — Scenes call into
+    # scenes._t() at render time and that helper resolves through the
+    # service we set here. Wired even when only English ships, so the
+    # plumbing is identical whether or not other languages are loaded.
+    i18n = I18nService(LANGUAGE_PATH)
+    _scenes_mod.set_i18n(i18n)
+    print(f"language: {i18n.lang} ({i18n.native_name()})", flush=True)
+
     theme_service = ThemeService(THEME_PATH, THEMES)
     theme = ThemeProxy(theme_service)
     print(f"theme: {theme_service.current.name}", flush=True)
@@ -797,24 +809,40 @@ def main() -> int:
           f"dim={brightness.config.dim_pct}%", flush=True)
 
     background = BackgroundService(BACKGROUND_PATH)
-    world_map = WorldMapService(display.canvas_w, display.canvas_h)
+    world_map = WorldMapService(display.canvas_w, display.canvas_h,
+                                location_path=LOCATION_PATH)
     world_map.start()
     print(f"background: {background.mode}", flush=True)
 
     # Idle/Radio opt in to a background; the provider returns None when
     # mode == "none" so the legacy solid-bg path is unchanged.
     class _BackgroundProvider:
+        # Styles that read poorly under the dim backlight (sparse star
+        # dots get crushed past the visibility threshold once the
+        # software RGB multiplier kicks in). When the panel goes idle
+        # we suppress these and fall through to the solid theme bg —
+        # other map styles have enough mid-tone area to survive dimming.
+        _DIM_SUPPRESSED = frozenset({"starmap"})
+
         def __init__(self, bg_svc, wm_svc):
             self._bg = bg_svc
             self._wm = wm_svc
-            # Whether the most recent __call__ returned a stale image —
-            # surfaced via is_rendering() so scenes can show the
-            # "updating" indicator without re-querying the map service.
             self._was_stale = False
+            # Set by the brightness loop on every active↔dim transition.
+            # Folded into state_key so the compositor repaints the moment
+            # we cross the threshold.
+            self._dim = False
+
+        def set_dim(self, dim: bool) -> None:
+            self._dim = bool(dim)
 
         def __call__(self, theme):
             style = self._bg.style_name()
             if style is None:
+                self._was_stale = False
+                return None
+            if self._dim and style in self._DIM_SUPPRESSED:
+                # Caller falls back to solid theme bg — see Scene._make_canvas.
                 self._was_stale = False
                 return None
             ovs = self._bg.active_overlays()
@@ -847,12 +875,14 @@ def main() -> int:
         def state_key(self):
             style = self._bg.style_name()
             if style is not None:
+                # When the dim-suppression branch is active we don't
+                # actually paint the map, so the cache key collapses to
+                # "(suppressed)" — keeps the compositor from invalidating
+                # on every map-warmer tick while we're dimmed.
+                if self._dim and style in self._DIM_SUPPRESSED:
+                    return ("world_map_dim_suppressed", style)
                 ovs = self._bg.active_overlays()
                 cl = self._bg.center_lon
-                # Including is_rendering() in the state_key forces the
-                # compositor to re-render on every transition (start /
-                # end of a worker render) so the indicator dot toggles
-                # without the user touching anything.
                 rendering = self._wm.is_rendering()
                 return (("world_map", style, rendering)
                         + self._wm.state_key(style, ovs, cl))
@@ -958,6 +988,10 @@ def main() -> int:
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, theme_service=theme_service,
     )
+    scenes["language"] = LanguageScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, i18n_service=i18n,
+    )
     scenes["brightness"] = BrightnessScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, brightness_service=brightness,
@@ -966,7 +1000,7 @@ def main() -> int:
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, theme_service=theme_service,
         alarm_service=alarms, station_service=stations,
-        mpd_service=mpd,
+        mpd_service=mpd, i18n_service=i18n,
     )
     scenes["audio_output"] = AudioOutputScene(
         theme, display.canvas_w, display.canvas_h,
@@ -1115,6 +1149,11 @@ def main() -> int:
             now = time.monotonic()
             if target_mode != prev_mode:
                 slow_fade_until = now + TRANSITION_FADE_S
+                # Tell the bg provider whether the panel is dimmed so it
+                # can suppress styles that read poorly under the dim
+                # backlight (currently just starmap — sparse stars get
+                # crushed past the visibility threshold).
+                bg_provider.set_dim(target_mode == "dim")
             prev_mode = target_mode
             fade_s = TRANSITION_FADE_S if now < slow_fade_until else STEP_FADE_S
             fade_step = max(

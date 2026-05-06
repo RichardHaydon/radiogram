@@ -23,6 +23,9 @@ from pathlib import Path
 
 
 DAY_NAMES_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+DAY_KEYS_SHORT = ("day.short.mon", "day.short.tue", "day.short.wed",
+                  "day.short.thu", "day.short.fri", "day.short.sat",
+                  "day.short.sun")
 ALL_WEEKDAYS = 0b0011111  # Mon..Fri
 ALL_WEEKEND = 0b1100000   # Sat..Sun
 ALL_DAYS = 0b1111111
@@ -39,15 +42,37 @@ class Alarm:
 
 
 def days_label(days: int) -> str:
+    """Localised label for an alarm's day mask. Resolved at call-time
+    so the string follows the active language."""
+    # Late import to avoid a circular dependency: scenes imports alarm,
+    # i18n_service imports nothing app-side, but the module-level _t
+    # helper lives in scenes (it carries the I18nService handle wired
+    # at startup).
+    try:
+        from scenes import _t
+    except Exception:
+        # Fallback path used during unit imports — return English.
+        from translations import EN
+        if days == 0:
+            return EN["days.once"]
+        if days == ALL_WEEKDAYS:
+            return EN["days.weekdays"]
+        if days == ALL_WEEKEND:
+            return EN["days.weekend"]
+        if days == ALL_DAYS:
+            return EN["days.every_day"]
+        return " ".join(EN[DAY_KEYS_SHORT[i]] for i in range(7)
+                        if days & (1 << i))
     if days == 0:
-        return "once"
+        return _t("days.once")
     if days == ALL_WEEKDAYS:
-        return "Mon–Fri"
+        return _t("days.weekdays")
     if days == ALL_WEEKEND:
-        return "Sat–Sun"
+        return _t("days.weekend")
     if days == ALL_DAYS:
-        return "every day"
-    return " ".join(DAY_NAMES_SHORT[i] for i in range(7) if days & (1 << i))
+        return _t("days.every_day")
+    return " ".join(_t(DAY_KEYS_SHORT[i]) for i in range(7)
+                    if days & (1 << i))
 
 
 def next_fire(alarm: Alarm, now: datetime, *,

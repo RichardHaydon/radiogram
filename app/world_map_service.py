@@ -101,6 +101,11 @@ class MapStyle:
     # instead of the equirectangular world map. Subsolar-centred sphere
     # in the disc, atmospheric rim + starfield outside.
     is_globe: bool = False
+    # When True, dispatch to the realistic local-sky renderer
+    # (skymap_service). Disc = horizon dome with bright stars,
+    # constellation lines, Sun/Moon/planets at their actual positions.
+    # is_globe and is_starmap are mutually exclusive.
+    is_starmap: bool = False
     # Globe-only knobs. atmosphere is the cyan rim colour; rim_frac is
     # the rim's width as a fraction of the disc radius. specular sets
     # peak ocean sun-glint brightness (added on top of the day fill);
@@ -228,8 +233,23 @@ GLOBE = MapStyle(
 )
 
 
+STARMAP = MapStyle(
+    name="starmap",
+    # Realistic dark-sky horizon view. Disc = local zenith dome (north
+    # up). Outside disc = ground colour. The sky/star colours are
+    # generated entirely inside skymap_service — these palette fields
+    # only matter for the cache-key bookkeeping below.
+    bg=(8, 12, 24),
+    ocean=(8, 12, 24),
+    land=(8, 12, 24),
+    coast=(8, 12, 24),
+    night_floor=1.0,
+    is_starmap=True,
+)
+
+
 STYLES: dict[str, MapStyle] = {
-    s.name: s for s in (SLATE, ATLAS, VINTAGE, BLUEPRINT, GLOBE)
+    s.name: s for s in (SLATE, ATLAS, VINTAGE, BLUEPRINT, GLOBE, STARMAP)
 }
 
 
@@ -319,7 +339,8 @@ class WorldMapService:
     WARMER_LEAD_S = 12.0
     WARMER_TICK_S = 4.0
 
-    def __init__(self, canvas_w: int, canvas_h: int):
+    def __init__(self, canvas_w: int, canvas_h: int,
+                 *, location_path: Path | None = None):
         # Render at full display resolution — the warmer thread covers
         # the per-minute rendering hit so we don't need to trade off
         # crispness for speed on the main thread.
@@ -327,6 +348,12 @@ class WorldMapService:
         self.canvas_h = canvas_h
         self.display_w = canvas_w
         self.display_h = canvas_h
+        # Skymap is built lazily — only construct (and load 100KB of
+        # bundled CSV) on first render of a starmap style. Keeps the
+        # cold-start cost off the main path for users who never pick
+        # the star-chart background.
+        self._location_path = location_path
+        self._skymap = None
         self._cached_bucket: int = -1
         self._cached_style: str = ""
         self._cached_overlays: tuple[str, ...] = ()
@@ -825,6 +852,21 @@ class WorldMapService:
                 overlays: set[str],
                 center_lon: float = 0.0,
                 *, now: datetime | None = None) -> Image.Image:
+        if style.is_starmap:
+            # Realistic dark-sky horizon view. Pulls observer lat/lon
+            # from the location file the weather service maintains.
+            # center_lon is ignored — the projection is local-zenith
+            # centred. Overlays drive constellation lines + planet
+            # labels.
+            if self._skymap is None:
+                from skymap_service import SkymapService
+                self._skymap = SkymapService(
+                    location_path=self._location_path)
+            return self._skymap.render(
+                self.canvas_w, self.canvas_h, now=now,
+                draw_constellations=True,
+                planet_labels=True,
+            )
         if style.is_globe:
             # Globe path is a different projection entirely — share the
             # masks + solar geometry helpers but build the image with

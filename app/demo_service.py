@@ -45,7 +45,11 @@ HOME_SENTINEL = "_home"
 class DemoStep:
     scene: str
     dwell_s: float
-    caption: str
+    # i18n key — resolved via scenes._t() at caption-read time so the
+    # active language drives the displayed text. Older code stored the
+    # English string here directly; the change keeps captions live
+    # across language switches mid-tour.
+    caption_key: str
     # pre_action signature: (background_service) -> None. Only the
     # background is mutated during the tour (see module docstring).
     pre_action: Optional[Callable] = None
@@ -71,107 +75,55 @@ def _build_steps(*, length: str, include_wifi: bool) -> list[DemoStep]:
     # so by the time the tour body opens the home scene the map is
     # already cached and the user sees the showcase view instantly.
     steps.append(DemoStep(
-        "demo_splash", 2.5,
-        "Hello.",
+        "demo_splash", 2.5, "demo.step.hello",
         splash=True,
         pre_action=lambda bg: bg.set_mode("world_map_globe"),
     ))
     steps.append(DemoStep(
-        "demo_splash", 3.0,
-        "Welcome to your clock radio.",
-        splash=True,
-    ))
+        "demo_splash", 3.0, "demo.step.welcome", splash=True))
     steps.append(DemoStep(
-        "demo_splash", 2.5,
-        "Here's a quick tour.",
-        splash=True,
-    ))
+        "demo_splash", 2.5, "demo.step.quick_tour", splash=True))
 
     # Intro: home screen with the globe already on (set by the first
     # splash's pre_action). Subsequent steps walk through the variants.
-    steps.append(DemoStep(
-        HOME_SENTINEL, 6.0,
-        "This is the clock face — the world map shows real-time "
-        "daylight across the planet.",
-    ))
+    steps.append(DemoStep(HOME_SENTINEL, 6.0, "demo.step.home_intro"))
     if full:
         steps.append(DemoStep(
-            HOME_SENTINEL, 5.0,
-            "The lit hemisphere follows the sun in real time.",
-        ))
+            HOME_SENTINEL, 5.0, "demo.step.lit_hemisphere"))
         steps.append(DemoStep(
-            HOME_SENTINEL, 5.0,
-            "Other map styles include atlas, slate, vintage and blueprint.",
+            HOME_SENTINEL, 5.0, "demo.step.styles_full",
             pre_action=lambda bg: bg.set_mode("world_map_atlas"),
         ))
     else:
         steps.append(DemoStep(
-            HOME_SENTINEL, 5.0,
-            "Map styles include globe, atlas, slate, vintage and blueprint.",
+            HOME_SENTINEL, 5.0, "demo.step.styles_short",
             pre_action=lambda bg: bg.set_mode("world_map_atlas"),
         ))
 
     # Settings tour
-    steps.append(DemoStep(
-        "settings", 5.0,
-        "Settings — wifi, audio, themes, background, brightness, about.",
-    ))
-    steps.append(DemoStep(
-        "background", 6.0,
-        "Pick a base map style and stack overlays "
-        "(city lights, water, borders, annotations).",
-    ))
+    steps.append(DemoStep("settings", 5.0, "demo.step.settings"))
+    steps.append(DemoStep("background", 6.0, "demo.step.background"))
     if full:
-        steps.append(DemoStep(
-            "theme", 5.0,
-            "Themes change the colour palette across every screen.",
-        ))
-    steps.append(DemoStep(
-        "brightness", 5.0,
-        "Two brightness levels — active and idle dim — "
-        "and a night-red mode that preserves dark adaptation.",
-    ))
+        steps.append(DemoStep("theme", 5.0, "demo.step.themes"))
+    steps.append(DemoStep("brightness", 5.0, "demo.step.brightness"))
     if include_wifi:
-        steps.append(DemoStep(
-            "wifi", 8.0,
-            "Wifi: tap RESCAN, pick a network, enter its password to connect.",
-        ))
+        steps.append(DemoStep("wifi", 8.0, "demo.step.wifi"))
 
     # Apps tour
-    steps.append(DemoStep(
-        "launcher", 5.0,
-        "Tap anywhere on the clock face to open Apps.",
-    ))
-    steps.append(DemoStep(
-        "station_list", 7.0,
-        "Internet radio — tap a station to start streaming.",
-    ))
-    steps.append(DemoStep(
-        "alarm_list", 7.0,
-        "Alarms — set a time, days of the week, and which station plays.",
-    ))
+    steps.append(DemoStep("launcher", 5.0, "demo.step.launcher"))
+    steps.append(DemoStep("station_list", 7.0, "demo.step.stations"))
+    steps.append(DemoStep("alarm_list", 7.0, "demo.step.alarms"))
     if full:
-        steps.append(DemoStep(
-            "weather", 5.0,
-            "A short forecast for your saved location.",
-        ))
-        steps.append(DemoStep(
-            "verse", 5.0,
-            "A daily verse — quiet bedside reading.",
-        ))
+        steps.append(DemoStep("weather", 5.0, "demo.step.weather"))
+        steps.append(DemoStep("verse", 5.0, "demo.step.verse"))
 
     # Outro: closing splash + a brief moment back on the home scene
     # with a caption so the user knows their settings were restored
     # before the tour disappears.
     steps.append(DemoStep(
-        "demo_splash", 2.5,
-        "That's the tour.",
-        splash=True,
-    ))
+        "demo_splash", 2.5, "demo.step.outro_splash", splash=True))
     steps.append(DemoStep(
-        HOME_SENTINEL, 4.0,
-        "Your previous settings have been restored.",
-    ))
+        HOME_SENTINEL, 4.0, "demo.step.outro_home"))
     return steps
 
 
@@ -206,7 +158,14 @@ class DemoService:
     def caption(self) -> str:
         if not self._active or self._idx < 0:
             return ""
-        return self._steps[self._idx].caption
+        # Lazy import to avoid the circular at module load: scenes
+        # imports demo_service via clockradio's main wiring.
+        try:
+            from scenes import _t
+            return _t(self._steps[self._idx].caption_key)
+        except Exception:
+            from translations import EN
+            return EN.get(self._steps[self._idx].caption_key, "")
 
     @property
     def step_index(self) -> int:

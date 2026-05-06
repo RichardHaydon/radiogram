@@ -28,6 +28,40 @@ from widgets import (
 )
 
 
+# Single module-level handle to the I18nService. Wired from main() at
+# startup before any Scene is constructed. Scenes call _t("key", **fmt)
+# rather than holding their own reference — every text_src lambda then
+# closes over _t and picks up language switches automatically (no
+# per-scene plumbing of the service object).
+_i18n = None
+
+
+def set_i18n(service) -> None:
+    """Called once from clockradio.main() after I18nService init."""
+    global _i18n
+    _i18n = service
+
+
+def _t(key: str, **fmt) -> str:
+    """Translate `key` with the active language, or fall back to the
+    English source string if the i18n service hasn't been wired yet
+    (defensive — scenes import this at module load before main runs)."""
+    if _i18n is None:
+        # Fall back to English so unit-test / import-time use still
+        # produces sensible strings.
+        from translations import EN
+        s = EN.get(key, key)
+        return s.format(**fmt) if fmt else s
+    return _i18n.t(key, **fmt)
+
+
+def _lang_version() -> int:
+    """Cache-key contribution: bumps every time the user switches
+    language. Folded into Scene.state_key by the helper used below
+    so all scenes invalidate together."""
+    return _i18n.version if _i18n is not None else 0
+
+
 class Scene:
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int):
         self.theme = theme
@@ -41,6 +75,9 @@ class Scene:
 
     def state_key(self) -> tuple:
         base = tuple(w.state_key() for w in self.widgets)
+        # Fold the i18n version into every scene's key so a language
+        # switch invalidates the cache without touching each subclass.
+        base = (_lang_version(),) + base
         # Background providers carry their own state_key (e.g. world map
         # invalidates per minute). Scenes that don't opt in never set
         # _background_provider so the legacy path is unchanged.
@@ -181,8 +218,9 @@ def _home_button(canvas_w: int, head_h: int, compositor) -> Button:
     so it's now the literal word, matching the other all-caps action
     buttons in the UI (RESCAN, OK, ADD…)."""
     btn_h = int(head_h * 0.80)
-    # Slightly wider than square so "HOME" fits comfortably without
-    # cramping the title that sits at canvas_w*0.20.
+    # Sized for the longest of the three home labels (Spanish "INICIO"
+    # is 6 chars; HOME / HJEM are only 4). Font factor tuned so the
+    # 6-char label fits without ellipsis at every resolution.
     btn_w = int(head_h * 1.10)
     # Sit just to the right of the back button. Back is at x=0.025
     # with width = head_h*0.80 (square); this starts past it with a
@@ -193,9 +231,9 @@ def _home_button(canvas_w: int, head_h: int, compositor) -> Button:
     return Button(
         Rect(back_end + gap, int(head_h * 0.10),
              btn_w, btn_h),
-        label_src="HOME",
+        label_src=lambda: _t("button.home"),
         on_press=lambda: compositor.clear_overlay(),
-        font_factor=0.42,
+        font_factor=0.32,
         color_role="fg_accent",
         outline_width=2,
     )
@@ -208,14 +246,15 @@ def _format_next_alarm(alarm_service) -> str:
     # most useful thing to surface on the idle header.
     snz = getattr(alarm_service, "snoozed_until", None)
     if snz is not None:
-        return f"💤 Snoozed until {snz.hour:02d}:{snz.minute:02d}"
+        time_s = f"{snz.hour:02d}:{snz.minute:02d}"
+        return "💤 " + _t("alarm.snoozed_until", time=time_s)
     nf = alarm_service.next_to_fire()
     if nf is None:
-        return "No alarm"
+        return _t("alarm.no_alarm")
     a, fire_time = nf
     label = f"{a.hour:02d}:{a.minute:02d} {days_label(a.days)}"
     if a.skip_next:
-        return f"⏰ {label}  (skip next)"
+        return f"⏰ {label}  ({_t('alarm.skip_marker')})"
     return f"⏰ {label}"
 
 
@@ -223,7 +262,7 @@ def _skip_button_label(alarm_service) -> str:
     nf = alarm_service.next_to_fire()
     if nf is None:
         return ""
-    return "UNSKIP" if nf[0].skip_next else "SKIP NEXT"
+    return _t("button.unskip") if nf[0].skip_next else _t("button.skip_next")
 
 
 def _format_stream_info(audio: str, bitrate: int) -> str:
@@ -259,13 +298,13 @@ def _format_footer_alarm(alarm_service) -> str:
     enough to share a row with PLAY / VOL controls."""
     snz = getattr(alarm_service, "snoozed_until", None)
     if snz is not None:
-        return f"Snz {snz.hour:02d}:{snz.minute:02d}"
+        return f"{_t('alarm.snz_short')} {snz.hour:02d}:{snz.minute:02d}"
     nf = alarm_service.next_to_fire()
     if nf is None:
-        return "No alarm"
-    a, _t = nf
+        return _t("alarm.no_alarm")
+    a, _ft = nf
     if a.skip_next:
-        return f"{a.hour:02d}:{a.minute:02d} skip"
+        return f"{a.hour:02d}:{a.minute:02d} {_t('alarm.skip_marker')}"
     return f"{a.hour:02d}:{a.minute:02d}"
 
 
@@ -294,7 +333,8 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
     plus_w = inner_w - play_w - minus_w - readout_w
 
     def play_label() -> str:
-        return "STOP" if mpd_service.status.active else "PLAY"
+        return (_t("button.stop") if mpd_service.status.active
+                else _t("button.play"))
 
     def play_action() -> None:
         if mpd_service.status.active:
@@ -317,7 +357,7 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
     ))
     scene.add(Button(
         Rect(x_offset + play_w, foot_y, minus_w, foot_h),
-        label_src="VOL−",
+        label_src=lambda: _t("button.vol_down"),
         on_press=lambda: mpd_service.command("vol_down"),
         font_factor=0.42,
     ))
@@ -333,7 +373,7 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
     scene.add(Button(
         Rect(x_offset + play_w + minus_w + readout_w,
              foot_y, plus_w, foot_h),
-        label_src="VOL+",
+        label_src=lambda: _t("button.vol_up"),
         on_press=lambda: mpd_service.command("vol_up"),
         font_factor=0.42,
     ))
@@ -486,7 +526,7 @@ class RadioScene(Scene):
             cur = station_service.current()
             if cur is not None and cur.name:
                 return cur.name
-            return mpd_service.status.station or "(unknown station)"
+            return mpd_service.status.station or _t("station.unknown")
 
         # Now-playing band: station name (top) / ICY title (middle) /
         # live stream format (bottom). The format subline is empty when
@@ -521,8 +561,8 @@ class RadioScene(Scene):
         bot_y = clock_h + np_h
 
         def play_label() -> str:
-            return ("PLAY" if mpd_service.status.state == "pause"
-                    else "PAUSE")
+            return (_t("button.play") if mpd_service.status.state == "pause"
+                    else _t("button.pause"))
 
         half = canvas_w // 2
         self.add(Button(
@@ -533,7 +573,7 @@ class RadioScene(Scene):
         ))
         self.add(Button(
             Rect(half, bot_y, canvas_w - half, action_h),
-            label_src="STATIONS",
+            label_src=lambda: _t("button.stations"),
             on_press=lambda: compositor.set_overlay("station_list"),
             font_factor=0.32,
         ))
@@ -579,7 +619,7 @@ class LauncherScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="Apps",
+            text_src=lambda: _t("scene.launcher.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -587,22 +627,20 @@ class LauncherScene(Scene):
         def stub():
             return None
 
-        # (label, on_press, icon-name) — icons are looked up in
-        # LAUNCHER_ICONS so we can swap art without touching this list.
-        # Sub-overlays opened from here close back to "launcher" (not
-        # all the way to idle), so the user always lands on a single
-        # consistent home for navigation.
+        # (i18n-key, on_press, icon-name). The label_src closes over the
+        # key so a language switch repaints with the new text without
+        # rebuilding the scene.
         cells = [
-            ("RADIO",
+            ("launcher.tile.radio",
              lambda: compositor.set_overlay("station_list"), "radio"),
-            ("ALARMS",
+            ("launcher.tile.alarms",
              lambda: compositor.set_overlay("alarm_list"), "clock"),
-            ("WEATHER",
+            ("launcher.tile.weather",
              lambda: compositor.set_overlay("weather"), "partly_cloudy"),
-            ("VERSE",
+            ("launcher.tile.verse",
              lambda: compositor.set_overlay("verse"), "book"),
-            ("CAMERA", stub, "camera"),
-            ("SETTINGS",
+            ("launcher.tile.camera", stub, "camera"),
+            ("launcher.tile.settings",
              lambda: compositor.set_overlay("settings"), "gear"),
         ]
         cols, rows = 3, 2
@@ -615,7 +653,7 @@ class LauncherScene(Scene):
         cell_h = grid_h / rows
         # Per-tile padding so neighbouring tiles aren't shoulder-to-shoulder.
         pad = int(min(cell_w, cell_h) * 0.06)
-        for i, (label, action, icon_name) in enumerate(cells):
+        for i, (key, action, icon_name) in enumerate(cells):
             col = i % cols
             row = i // cols
             tile_x = margin_x + int(col * cell_w) + pad
@@ -624,7 +662,7 @@ class LauncherScene(Scene):
             tile_h = int(cell_h) - 2 * pad
             self.add(AppTile(
                 Rect(tile_x, tile_y, tile_w, tile_h),
-                label_src=label,
+                label_src=(lambda k=key: _t(k)),
                 on_press=action,
                 icon_drawer=LAUNCHER_ICONS.get(icon_name),
             ))
@@ -660,17 +698,22 @@ class QuickPanelScene(Scene):
 
     def _header_text(self) -> str:
         if self._mpd.status.active:
-            station = self._mpd.status.station or "Radio"
+            station = self._mpd.status.station or _t("quick.radio")
             return station
         nf = self._alarms.next_to_fire()
         if nf is not None:
             a, _ = nf
-            skip = "  (skip next)" if a.skip_next else ""
-            return f"Next: {a.hour:02d}:{a.minute:02d} {days_label(a.days)}{skip}"
-        return "No alarm"
+            skip = (f"  ({_t('alarm.skip_marker')})"
+                    if a.skip_next else "")
+            return _t("quick.next_label",
+                      time=f"{a.hour:02d}:{a.minute:02d}",
+                      days=days_label(a.days)) + skip
+        return _t("alarm.no_alarm")
 
     def _live_actions(self):
-        """List of (label, action) for buttons that make sense right now."""
+        """List of (label_callable, action) for buttons that make
+        sense right now. Labels are callables so a language switch
+        live-updates the label text without rebuilding."""
         comp = self._compositor
 
         def wrap(fn):
@@ -679,18 +722,20 @@ class QuickPanelScene(Scene):
                 fn()
             return _
 
-        actions: list[tuple[str, callable]] = []
+        actions: list[tuple] = []
         if self._mpd.status.active:
-            actions.append(("STOP RADIO",
+            actions.append((lambda: _t("quick.stop_radio"),
                             wrap(lambda: self._mpd.command(
                                 ("stop_alarm",)))))
         nf = self._alarms.next_to_fire()
         if nf is not None:
-            label = ("UNSKIP NEXT" if nf[0].skip_next
-                     else "SKIP NEXT ALARM")
-            actions.append((label,
-                            wrap(lambda: self._alarms.toggle_skip_next())))
-        actions.append(("CLOSE", lambda: comp.clear_overlay()))
+            skip_now = nf[0].skip_next
+            actions.append(
+                ((lambda s=skip_now: _t("quick.unskip_next") if s
+                  else _t("quick.skip_next_alarm")),
+                 wrap(lambda: self._alarms.toggle_skip_next())))
+        actions.append((lambda: _t("button.close"),
+                        lambda: comp.clear_overlay()))
         return actions
 
     def _rebuild_actions(self) -> None:
@@ -706,13 +751,13 @@ class QuickPanelScene(Scene):
         body_top = self._head_h + int(self.canvas_h * 0.04)
         body_h = self.canvas_h - body_top - int(self.canvas_h * 0.04)
         cell_h = body_h // len(actions)
-        for i, (label, fn) in enumerate(actions):
+        for i, (label_fn, fn) in enumerate(actions):
             btn = Button(
                 Rect(int(self.canvas_w * 0.06),
                      body_top + i * cell_h,
                      int(self.canvas_w * 0.88),
                      cell_h - 8),
-                label_src=label,
+                label_src=label_fn,
                 on_press=fn,
                 font_factor=0.36,
             )
@@ -724,7 +769,10 @@ class QuickPanelScene(Scene):
     def state_key(self) -> tuple:
         # Build keys off the current live action set so a state change
         # (e.g. radio starts playing while panel is open) refreshes layout.
-        labels = tuple(lbl for lbl, _ in self._live_actions())
+        # Label callables are eagerly evaluated for the cache key so a
+        # language switch (which just changes their output) invalidates
+        # the cache via _lang_version() in Scene.state_key already.
+        labels = tuple(lbl() for lbl, _ in self._live_actions())
         return (self._header_text(), labels)
 
     def render(self) -> Image.Image:
@@ -754,38 +802,40 @@ class SettingsScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="Settings",
+            text_src=lambda: _t("scene.settings.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
         body_top = head_h + int(canvas_h * 0.04)
         body_h = canvas_h - body_top - int(canvas_h * 0.04)
-        # (label, action, icon-name) — icons live in widgets.SETTINGS_ICONS
+        # (i18n-key, action, icon-name) — icons live in widgets.SETTINGS_ICONS
         # so the row label and its glyph stay aligned in one place.
         rows = [
-            ("WIFI",
+            ("settings.row.wifi",
              lambda: compositor.set_overlay("wifi"), "wifi"),
-            ("AUDIO",
+            ("settings.row.audio",
              lambda: compositor.set_overlay("audio_output"), "speaker"),
-            ("THEME",
+            ("settings.row.theme",
              lambda: compositor.set_overlay("theme"), "palette"),
-            ("BACKGROUND",
+            ("settings.row.language",
+             lambda: compositor.set_overlay("language"), "language"),
+            ("settings.row.background",
              lambda: compositor.set_overlay("background"), "globe"),
-            ("BRIGHTNESS",
+            ("settings.row.brightness",
              lambda: compositor.set_overlay("brightness"), "brightness"),
-            ("DEMO",
+            ("settings.row.demo",
              lambda: compositor.set_overlay("demo_intro"), "play"),
-            ("ABOUT",
+            ("settings.row.about",
              lambda: compositor.set_overlay("about"), "info"),
         ]
         # Reserve enough cell height for any future addition without
-        # wobbling the existing layout.
-        cell_h = body_h // max(len(rows), 7)
-        for i, (label, action, icon_name) in enumerate(rows):
+        # wobbling the existing layout. Now 8 rows (added LANGUAGE).
+        cell_h = body_h // max(len(rows), 8)
+        for i, (key, action, icon_name) in enumerate(rows):
             self.add(IconRow(
                 Rect(int(canvas_w * 0.06), body_top + i * cell_h,
                      int(canvas_w * 0.88), cell_h - 8),
-                label_src=label,
+                label_src=(lambda k=key: _t(k)),
                 on_press=action,
                 icon_drawer=SETTINGS_ICONS.get(icon_name),
                 font_factor=0.55,
@@ -813,7 +863,7 @@ class ThemeScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="Theme",
+            text_src=lambda: _t("scene.theme.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -908,7 +958,7 @@ class WifiScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.22), head_h),
-            text_src="Wifi",
+            text_src=lambda: _t("scene.wifi.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -917,7 +967,7 @@ class WifiScene(Scene):
         self.add(Button(
             Rect(int(canvas_w * 0.44), int(head_h * 0.10),
                  int(canvas_w * 0.20), int(head_h * 0.80)),
-            label_src="RESCAN",
+            label_src=lambda: _t("button.rescan"),
             on_press=lambda: wifi_service.rescan(),
             font_factor=0.42,
         ))
@@ -968,12 +1018,13 @@ class WifiScene(Scene):
     def _status_line(self) -> str:
         s = self._wifi.status
         if s.busy:
-            return "Connecting…"
+            return _t("wifi.connecting")
         if s.last_error:
-            return f"Error: {s.last_error}"
+            return _t("wifi.error", message=s.last_error)
         if s.ssid:
-            return f"On: {s.ssid}   {s.signal}%   {s.ip}"
-        return f"Not connected ({s.state})"
+            return _t("wifi.connected",
+                      ssid=s.ssid, signal=s.signal, ip=s.ip)
+        return _t("wifi.not_connected", state=s.state)
 
     def _max_page(self) -> int:
         n = len(self._wifi.status.networks)
@@ -1036,7 +1087,7 @@ class WifiScene(Scene):
         if not nets:
             empty = TextWidget(
                 Rect(0, body_top, self.canvas_w, body_h),
-                text_src="(no networks — tap RESCAN)",
+                text_src=lambda: _t("wifi.empty_list"),
                 font_factor=0.05,
                 color_role="fg_dim",
                 font_role="regular",
@@ -1164,7 +1215,7 @@ class WifiPasswordScene(Scene):
         self.add(_home_button(cw, head_h, self._compositor))
         self.add(TextWidget(
             Rect(int(cw * 0.20), 0, int(cw * 0.78), head_h),
-            text_src=f"Wifi password — {self._ssid}",
+            text_src=_t("scene.wifi_password.title", ssid=self._ssid),
             font_factor=0.50,
             color_role="fg_dim",
             font_role="regular",
@@ -1176,14 +1227,15 @@ class WifiPasswordScene(Scene):
                    else "•" * len(self._password))
         self.add(TextWidget(
             Rect(int(cw * 0.04), entry_y, int(cw * 0.62), entry_h),
-            text_src=(display or "(tap keys)"),
+            text_src=(display or _t("wifi.password_hint")),
             font_factor=0.55,
             color_role=("fg_bright" if self._password else "fg_dim"),
         ))
         self.add(Button(
             Rect(int(cw * 0.68), entry_y + int(entry_h * 0.10),
                  int(cw * 0.14), int(entry_h * 0.80)),
-            label_src=("HIDE" if self._show else "SHOW"),
+            label_src=(_t("button.hide") if self._show
+                       else _t("button.show")),
             on_press=self._toggle_show,
             font_factor=0.42,
             color_role="fg_dim",
@@ -1191,7 +1243,7 @@ class WifiPasswordScene(Scene):
         self.add(Button(
             Rect(int(cw * 0.84), entry_y + int(entry_h * 0.10),
                  int(cw * 0.14), int(entry_h * 0.80)),
-            label_src="OK",
+            label_src=_t("button.ok"),
             on_press=self._connect,
             font_factor=0.55,
             color_role=("fg_bright" if self._password else "fg_dim"),
@@ -1215,7 +1267,7 @@ class WifiPasswordScene(Scene):
         sw = int(cell_w * 1.5)
         self.add(Button(
             Rect(0, row_y, sw, row_h),
-            label_src="SHIFT",
+            label_src=_t("button.shift"),
             on_press=self._toggle_shift,
             font_factor=0.30,
             color_role=("fg_bright" if self._shift else "fg_dim"),
@@ -1233,7 +1285,7 @@ class WifiPasswordScene(Scene):
         bk_x = sw + 7 * cell_w
         self.add(Button(
             Rect(bk_x, row_y, cw - bk_x, row_h),
-            label_src="DEL",
+            label_src=_t("button.del"),
             on_press=self._backspace,
             font_factor=0.42,
             color_role="fg_dim",
@@ -1252,7 +1304,7 @@ class WifiPasswordScene(Scene):
         sp_x = len(symbols_left) * cell_w
         self.add(Button(
             Rect(sp_x, row_y, cw - sp_x, row_h),
-            label_src="SPACE",
+            label_src=_t("button.space"),
             on_press=lambda: self._add_char(" "),
             font_factor=0.36,
             color_role="fg_dim",
@@ -1311,7 +1363,7 @@ class VerseScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.40), head_h),
-            text_src="Verse of the Day",
+            text_src=lambda: _t("scene.verse.title"),
             font_factor=0.50,
             color_role="fg_dim",
         ))
@@ -1326,7 +1378,7 @@ class VerseScene(Scene):
         self.add(Button(
             Rect(int(canvas_w * 0.80), int(head_h * 0.10),
                  int(canvas_w * 0.18), int(head_h * 0.80)),
-            label_src="REFRESH",
+            label_src=lambda: _t("button.refresh"),
             on_press=lambda: verse_service.refresh(),
             font_factor=0.42,
         ))
@@ -1354,9 +1406,9 @@ class VerseScene(Scene):
     def _ref_line(self) -> str:
         s = self._verse.status
         if s.busy and not s.reference:
-            return "Loading…"
+            return _t("verse.loading")
         if s.last_error and not s.reference:
-            return f"Error: {s.last_error}"
+            return _t("wifi.error", message=s.last_error)
         return s.reference
 
     def state_key(self) -> tuple:
@@ -1392,14 +1444,14 @@ class WeatherScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.34), head_h),
-            text_src="Weather",
+            text_src=lambda: _t("scene.weather.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
         self.add(Button(
             Rect(int(canvas_w * 0.74), int(head_h * 0.10),
                  int(canvas_w * 0.24), int(head_h * 0.80)),
-            label_src="REFRESH",
+            label_src=lambda: _t("button.refresh"),
             on_press=lambda: weather_service.refresh(),
             font_factor=0.42,
         ))
@@ -1447,22 +1499,27 @@ class WeatherScene(Scene):
     def _loc_line(self) -> str:
         s = self._weather.status
         if s.busy and not s.location:
-            return "Locating…"
+            return _t("weather.locating")
         if s.last_error:
-            return f"Error: {s.last_error}"
+            return _t("wifi.error", message=s.last_error)
         return s.location or ""
 
     def _temp_line(self) -> str:
         s = self._weather.status
         if s.cur_temp_c is None:
-            return "—"
+            return _t("misc.dash")
         return f"{round(s.cur_temp_c)}°C"
 
     def _cond_line(self) -> str:
         s = self._weather.status
         if s.cur_temp_c is None:
             return ""
-        return f"{s.cur_label}    wind {round(s.cur_wind_kmh)} km/h"
+        # Resolve the WMO code to a localised label at render time so a
+        # language switch updates the readout without a fresh fetch.
+        from weather_service import label_for_code
+        return _t("weather.cond_line",
+                  label=label_for_code(s.cur_code),
+                  wind=round(s.cur_wind_kmh))
 
     def _rebuild_days(self) -> None:
         for w in self._day_widgets:
@@ -1523,9 +1580,13 @@ class WeatherScene(Scene):
     def _weekday(iso: str) -> str:
         try:
             from datetime import date
-            return date.fromisoformat(iso).strftime("%a")
+            wd = date.fromisoformat(iso).weekday()
         except Exception:
             return iso
+        # Look up the localised short day name (Mon=0..Sun=6).
+        return _t(("day.short.mon", "day.short.tue", "day.short.wed",
+                   "day.short.thu", "day.short.fri", "day.short.sat",
+                   "day.short.sun")[wd])
 
     def state_key(self) -> tuple:
         s = self._weather.status
@@ -1577,7 +1638,7 @@ class StationListScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.50), head_h),
-            text_src="Stations",
+            text_src=lambda: _t("scene.station_list.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -1662,7 +1723,7 @@ class StationListScene(Scene):
         if not sts:
             empty = TextWidget(
                 Rect(0, body_top, self.canvas_w, body_h),
-                text_src="(no stations — see README)",
+                text_src=lambda: _t("station.empty_list"),
                 font_factor=0.06,
                 color_role="fg_dim",
                 font_role="regular",
@@ -1730,14 +1791,14 @@ class AlarmListScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.44), head_h),
-            text_src="Alarms",
+            text_src=lambda: _t("scene.alarm_list.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
         self.add(Button(
             Rect(int(canvas_w * 0.74), int(head_h * 0.10),
                  int(canvas_w * 0.24), int(head_h * 0.80)),
-            label_src="+ ADD",
+            label_src=lambda: _t("button.add"),
             on_press=lambda: self._open_edit(None),
             font_factor=0.42,
         ))
@@ -1753,8 +1814,9 @@ class AlarmListScene(Scene):
 
     @staticmethod
     def _row_label(a: Alarm) -> str:
-        on = "ON " if a.enabled else "OFF"
-        skip = "  (skip next)" if a.skip_next else ""
+        on = _t("alarm.on_prefix") if a.enabled else _t("alarm.off_prefix")
+        skip = (f"  ({_t('alarm.skip_marker')})"
+                if a.skip_next else "")
         return f"{on}   {a.hour:02d}:{a.minute:02d}   {days_label(a.days)}{skip}"
 
     def _rebuild_rows(self) -> None:
@@ -1770,7 +1832,7 @@ class AlarmListScene(Scene):
         if not alarms:
             empty = TextWidget(
                 Rect(0, body_top, self.canvas_w, body_h),
-                text_src="(no alarms — tap +ADD)",
+                text_src=lambda: _t("alarm.no_alarms_hint"),
                 font_factor=0.06,
                 color_role="fg_dim",
                 font_role="regular",
@@ -1785,7 +1847,7 @@ class AlarmListScene(Scene):
             btn = Button(
                 Rect(int(self.canvas_w * 0.04), body_top + i * cell_h,
                      int(self.canvas_w * 0.92), cell_h - 8),
-                label_src=self._row_label(a),
+                label_src=(lambda a=row_a: self._row_label(a)),
                 on_press=lambda a=row_a: self._open_edit(a),
                 font_factor=0.30,
                 color_role=color_role,
@@ -1817,7 +1879,13 @@ class AlarmEditScene(Scene):
     hit AlarmService on SAVE/DELETE, so CANCEL is a true discard.
     """
 
-    DAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"]
+    # Source-of-truth day-letter keys; the picker label resolves through
+    # i18n at render time so a language switch updates without rebuild.
+    DAY_LETTER_KEYS = (
+        "day.letter.mon", "day.letter.tue", "day.letter.wed",
+        "day.letter.thu", "day.letter.fri", "day.letter.sat",
+        "day.letter.sun",
+    )
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor, alarm_service):
@@ -1890,14 +1958,16 @@ class AlarmEditScene(Scene):
         self.add(_home_button(cw, head_h, self._compositor))
         self.add(TextWidget(
             Rect(int(cw * 0.20), 0, int(cw * 0.34), head_h),
-            text_src=("New Alarm" if self._is_new else "Edit Alarm"),
+            text_src=(_t("scene.alarm_edit.title.new") if self._is_new
+                      else _t("scene.alarm_edit.title.edit")),
             font_factor=0.55,
             color_role="fg_dim",
         ))
         self.add(Button(
             Rect(int(cw * 0.68), int(head_h * 0.10),
                  int(cw * 0.30), int(head_h * 0.80)),
-            label_src=("ENABLED" if d.enabled else "DISABLED"),
+            label_src=(_t("alarm.enabled") if d.enabled
+                       else _t("alarm.disabled")),
             on_press=self._toggle_enabled,
             font_factor=0.42,
             color_role=("fg_bright" if d.enabled else "fg_dim"),
@@ -1962,11 +2032,11 @@ class AlarmEditScene(Scene):
         days_y = time_top + time_h + int(ch * 0.02)
         days_h = int(ch * 0.16)
         cell_w = cw // 7
-        for i, lab in enumerate(self.DAY_LABELS):
+        for i, key in enumerate(self.DAY_LETTER_KEYS):
             on = bool(d.days & (1 << i))
             self.add(Button(
                 Rect(i * cell_w, days_y, cell_w, days_h),
-                label_src=lab,
+                label_src=_t(key),
                 on_press=lambda i=i: self._toggle_day(i),
                 font_factor=0.55,
                 color_role=("fg_bright" if on else "fg_dim"),
@@ -1980,12 +2050,12 @@ class AlarmEditScene(Scene):
             half = cw // 2
             self.add(Button(
                 Rect(0, act_y, half, act_h),
-                label_src="CANCEL", on_press=self._cancel,
+                label_src=_t("button.cancel"), on_press=self._cancel,
                 font_factor=0.40,
             ))
             self.add(Button(
                 Rect(half, act_y, cw - half, act_h),
-                label_src="SAVE", on_press=self._save,
+                label_src=_t("button.save"), on_press=self._save,
                 font_factor=0.40,
                 color_role="fg_bright",
             ))
@@ -1993,18 +2063,18 @@ class AlarmEditScene(Scene):
             third = cw // 3
             self.add(Button(
                 Rect(0, act_y, third, act_h),
-                label_src="CANCEL", on_press=self._cancel,
+                label_src=_t("button.cancel"), on_press=self._cancel,
                 font_factor=0.40,
             ))
             self.add(Button(
                 Rect(third, act_y, third, act_h),
-                label_src="DELETE", on_press=self._delete,
+                label_src=_t("button.delete"), on_press=self._delete,
                 font_factor=0.40,
                 color_role="fg_dim",
             ))
             self.add(Button(
                 Rect(2 * third, act_y, cw - 2 * third, act_h),
-                label_src="SAVE", on_press=self._save,
+                label_src=_t("button.save"), on_press=self._save,
                 font_factor=0.40,
                 color_role="fg_bright",
             ))
@@ -2083,7 +2153,7 @@ class AlarmFiringScene(Scene):
         btn_y = canvas_h - btn_h
         self.add(Button(
             Rect(0, btn_y, canvas_w, btn_h),
-            label_src="STOP",
+            label_src=lambda: _t("button.stop"),
             on_press=lambda: alarm_service.stop_firing(),
             font_factor=0.40,
             color_role="fg_bright",
@@ -2116,7 +2186,7 @@ class AboutScene(Scene):
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor, theme_service, alarm_service,
-                 station_service, mpd_service):
+                 station_service, mpd_service, i18n_service):
         super().__init__(theme, canvas_w, canvas_h)
         head_h = int(canvas_h * 0.14)
         self.add(_back_button(
@@ -2127,7 +2197,7 @@ class AboutScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="About",
+            text_src=lambda: _t("scene.about.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -2139,16 +2209,22 @@ class AboutScene(Scene):
         try:
             kernel = os.uname().release
         except (AttributeError, OSError):
-            kernel = "—"
+            kernel = _t("misc.dash")
 
         rows: list = [
-            (lambda h=host: f"Host    {h}"),
-            (lambda k=kernel: f"Kernel  {k}"),
-            (lambda: f"IP      {_local_ip()}"),
-            (lambda: f"Theme   {theme_service.current.name}"),
-            (lambda: f"Alarms  {len(alarm_service.alarms)}"),
-            (lambda: f"Stations  {len(station_service.stations)}"),
-            (lambda: f"MPD     {mpd_service.status.state}"),
+            (lambda h=host: _t("about.row.host", hostname=h)),
+            (lambda k=kernel: _t("about.row.kernel", release=k)),
+            (lambda: _t("about.row.ip", ip=_local_ip())),
+            (lambda: _t("about.row.theme",
+                        name=theme_service.current.name)),
+            (lambda: _t("about.row.language",
+                        name=i18n_service.native_name())),
+            (lambda: _t("about.row.alarms",
+                        count=len(alarm_service.alarms))),
+            (lambda: _t("about.row.stations",
+                        count=len(station_service.stations))),
+            (lambda: _t("about.row.mpd",
+                        state=mpd_service.status.state)),
         ]
         # Reserve the bottom slice of the body for a "RUN GUIDED TOUR"
         # button — info rows live above it.
@@ -2176,7 +2252,7 @@ class AboutScene(Scene):
         tour_y = body_top + full_body_h - tour_btn_h
         self.add(Button(
             Rect(tour_x, tour_y, tour_w, tour_btn_h),
-            label_src="RUN GUIDED TOUR",
+            label_src=lambda: _t("button.run_tour"),
             on_press=lambda: compositor.set_overlay("demo_intro"),
             font_factor=0.40,
             color_role="fg_accent",
@@ -2201,7 +2277,7 @@ class BrightnessScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="Brightness",
+            text_src=lambda: _t("scene.brightness.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -2212,7 +2288,7 @@ class BrightnessScene(Scene):
         # vertical breathing room above and below. Three vertical bands.
         band_h = body_h // 3
         self._build_setting(
-            label="Active",
+            label_key="brightness.active",
             band_y=body_top,
             band_h=band_h,
             value_fn=lambda: f"{self._svc.config.active_pct}%",
@@ -2220,7 +2296,7 @@ class BrightnessScene(Scene):
             plus=lambda: self._svc.step_active(+1),
         )
         self._build_setting(
-            label="Idle dim",
+            label_key="brightness.idle_dim",
             band_y=body_top + band_h + int(body_h * 0.04),
             band_h=band_h,
             value_fn=lambda: f"{self._svc.config.dim_pct}%",
@@ -2236,13 +2312,13 @@ class BrightnessScene(Scene):
         self.add(CheckboxRow(
             Rect(int(canvas_w * 0.10), nr_y,
                  int(canvas_w * 0.80), nr_h),
-            label_src="Night red",
+            label_src=lambda: _t("brightness.night_red"),
             is_on_src=lambda: self._svc.config.night_red,
             on_press=lambda: self._svc.toggle_night_red(),
             font_factor=0.40,
         ))
 
-    def _build_setting(self, *, label: str, band_y: int, band_h: int,
+    def _build_setting(self, *, label_key: str, band_y: int, band_h: int,
                        value_fn, minus, plus) -> None:
         cw = self.canvas_w
         # Label takes the top half, control row the bottom half.
@@ -2250,7 +2326,7 @@ class BrightnessScene(Scene):
         ctl_h = band_h - lbl_h
         self.add(TextWidget(
             Rect(int(cw * 0.06), band_y, int(cw * 0.88), lbl_h),
-            text_src=label,
+            text_src=(lambda k=label_key: _t(k)),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -2332,7 +2408,7 @@ class AudioOutputScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="Audio Output",
+            text_src=lambda: _t("scene.audio_output.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -2340,7 +2416,7 @@ class AudioOutputScene(Scene):
             Rect(int(canvas_w * 0.06), head_h + int(canvas_h * 0.06),
                  int(canvas_w * 0.88), int(canvas_h * 0.12)),
             text_src=lambda: ("" if self._mpd.status.outputs
-                              else "No outputs reported by MPD"),
+                              else _t("audio.no_outputs")),
             font_role="regular",
             font_factor=0.50,
             color_role="fg_dim",
@@ -2392,13 +2468,14 @@ class AudioOutputScene(Scene):
 
             if o.id == self._expanded_id:
                 kv = cfg.get(o.name, {})
-                device = kv.get("device", "—")
+                device = kv.get("device", _t("misc.dash"))
                 d_x = margin_x + int(cw * 0.04)
                 d_w = inner_w - int(cw * 0.04)
                 line_h = detail_h // 4
                 self.widgets.append(TextWidget(
                     Rect(d_x, y, d_w, line_h),
-                    text_src=f"Plugin   {o.plugin or '—'}",
+                    text_src=_t("audio.row.plugin",
+                                plugin=(o.plugin or _t("misc.dash"))),
                     font_role="regular",
                     font_factor=0.55,
                     color_role="fg_subtle",
@@ -2406,7 +2483,7 @@ class AudioOutputScene(Scene):
                 self._rows.append(self.widgets[-1])
                 self.widgets.append(TextWidget(
                     Rect(d_x, y + line_h, d_w, line_h),
-                    text_src=f"Device   {device}",
+                    text_src=_t("audio.row.device", device=device),
                     font_role="regular",
                     font_factor=0.55,
                     color_role="fg_subtle",
@@ -2417,7 +2494,7 @@ class AudioOutputScene(Scene):
                 if o.enabled:
                     self.widgets.append(TextWidget(
                         Rect(d_x, btn_y, d_w, btn_h),
-                        text_src="ACTIVE",
+                        text_src=_t("audio.active"),
                         font_factor=0.55,
                         color_role="fg_accent",
                     ))
@@ -2425,7 +2502,7 @@ class AudioOutputScene(Scene):
                 else:
                     use_btn = Button(
                         Rect(d_x, btn_y, d_w, btn_h),
-                        label_src="USE THIS OUTPUT",
+                        label_src=_t("button.use_output"),
                         on_press=lambda oid=o.id: self._apply(oid),
                         font_factor=0.36,
                     )
@@ -2454,19 +2531,21 @@ class BackgroundScene(Scene):
     is exclusive; overlays stack. Both persist immediately and the next
     opted-in scene picks them up via its background provider."""
 
+    # (mode, i18n-key) — label resolved at render via _t().
     STYLES = (
-        ("none", "None"),
-        ("world_map_slate", "Slate"),
-        ("world_map_atlas", "Atlas"),
-        ("world_map_vintage", "Vintage"),
-        ("world_map_blueprint", "Blueprint"),
-        ("world_map_globe", "Globe"),
+        ("none", "background.style.none"),
+        ("world_map_slate", "background.style.slate"),
+        ("world_map_atlas", "background.style.atlas"),
+        ("world_map_vintage", "background.style.vintage"),
+        ("world_map_blueprint", "background.style.blueprint"),
+        ("world_map_globe", "background.style.globe"),
+        ("world_map_starmap", "background.style.starmap"),
     )
     OVERLAYS = (
-        ("city_lights", "City Lights"),
-        ("water", "Lakes & Rivers"),
-        ("political", "Political Borders"),
-        ("annotations", "Latitudes & Terminator"),
+        ("city_lights", "background.overlay.city_lights"),
+        ("water", "background.overlay.water"),
+        ("political", "background.overlay.political"),
+        ("annotations", "background.overlay.annotations"),
     )
 
     # MAX_ROWS keeps each cell big enough that font_factor=0.55 reads
@@ -2492,7 +2571,7 @@ class BackgroundScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.50), head_h),
-            text_src="Background",
+            text_src=lambda: _t("scene.background.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -2530,12 +2609,14 @@ class BackgroundScene(Scene):
     def _items(self) -> list[tuple]:
         """Flat ordered list of selectable rows. Style radios first
         (page 1), then overlays + Centre (page 2). Tagged tuples so
-        _rebuild_rows can dispatch to the right widget per kind."""
+        _rebuild_rows can dispatch to the right widget per kind. The
+        third tuple slot carries the i18n key — resolved to a label
+        at render time so language switches are live."""
         items: list[tuple] = []
-        for mode, label in self.STYLES:
-            items.append(("style", mode, label))
-        for name, label in self.OVERLAYS:
-            items.append(("overlay", name, label))
+        for mode, key in self.STYLES:
+            items.append(("style", mode, key))
+        for name, key in self.OVERLAYS:
+            items.append(("overlay", name, key))
         items.append(("centre",))
         return items
 
@@ -2595,20 +2676,20 @@ class BackgroundScene(Scene):
             row_h = cell_h - 8
             kind = item[0]
             if kind == "style":
-                _, mode, label = item
+                _, mode, key = item
                 row = CheckboxRow(
                     Rect(margin_x, row_y, content_w, row_h),
-                    label_src=label,
+                    label_src=(lambda k=key: _t(k)),
                     on_press=(lambda m=mode: self._set_mode(m)),
                     is_on_src=(lambda m=mode: self._bg.mode == m),
                     shape="radio",
                     font_factor=0.55,
                 )
             elif kind == "overlay":
-                _, name, label = item
+                _, name, key = item
                 row = CheckboxRow(
                     Rect(margin_x, row_y, content_w, row_h),
-                    label_src=label,
+                    label_src=(lambda k=key: _t(k)),
                     on_press=(lambda n=name: self._toggle_overlay(n)),
                     is_on_src=(lambda n=name: self._bg.is_overlay(n)),
                     shape="check",
@@ -2618,9 +2699,9 @@ class BackgroundScene(Scene):
             else:                                    # "centre"
                 row = Button(
                     Rect(margin_x, row_y, content_w, row_h),
-                    label_src=lambda: (
-                        f"Centre: "
-                        f"{_format_centre_lon(self._bg.center_lon)}  ▸"
+                    label_src=lambda: _t(
+                        "background.center_button",
+                        location=_format_centre_lon(self._bg.center_lon),
                     ),
                     on_press=lambda: self._compositor.set_overlay(
                         "map_center"),
@@ -2653,33 +2734,34 @@ class BackgroundScene(Scene):
 # degrees east (so western longitudes are negative). The list is the
 # whole option set the user can pick — easy to extend without touching
 # the scene class or the persistence layer.
+# (longitude, i18n-key) — labels resolved at render time.
 MAP_CENTERS = (
-    (0.0, "London (Greenwich)"),
-    (35.2, "Jerusalem"),
-    (39.8, "Mecca"),
-    (-74.0, "New York"),
-    (-87.6, "Chicago"),
-    (-122.3, "Seattle"),
-    (-157.9, "Honolulu"),
-    (139.7, "Tokyo"),
-    (116.4, "Beijing"),
-    (151.2, "Sydney"),
-    (18.4, "Cape Town"),
-    (-58.4, "Buenos Aires"),
+    (0.0, "map_center.greenwich"),
+    (35.2, "map_center.jerusalem"),
+    (39.8, "map_center.mecca"),
+    (-74.0, "map_center.new_york"),
+    (-87.6, "map_center.chicago"),
+    (-122.3, "map_center.seattle"),
+    (-157.9, "map_center.honolulu"),
+    (139.7, "map_center.tokyo"),
+    (116.4, "map_center.beijing"),
+    (151.2, "map_center.sydney"),
+    (18.4, "map_center.cape_town"),
+    (-58.4, "map_center.buenos_aires"),
 )
 
 
 def _format_centre_lon(lon: float) -> str:
     """Closest predefined centre name, falling back to decimal degrees."""
-    best = None
+    best_key = None
     best_dist = 360.0
-    for clon, name in MAP_CENTERS:
+    for clon, key in MAP_CENTERS:
         d = abs(((lon - clon + 180) % 360) - 180)
         if d < best_dist:
             best_dist = d
-            best = name
-    if best is not None and best_dist < 0.6:
-        return best
+            best_key = key
+    if best_key is not None and best_dist < 0.6:
+        return _t(best_key)
     # Off-list value (shouldn't happen via this picker, but possible
     # from a hand-edited config file): show the raw degrees.
     sign = "E" if lon >= 0 else "W"
@@ -2706,7 +2788,7 @@ class MapCenterScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="Map Centre",
+            text_src=lambda: _t("scene.map_center.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -2729,10 +2811,10 @@ class MapCenterScene(Scene):
         margin_x = int(self.canvas_w * 0.05)
         content_w = self.canvas_w - 2 * margin_x
         y = body_top
-        for clon, label in MAP_CENTERS:
+        for clon, key in MAP_CENTERS:
             row = CheckboxRow(
                 Rect(margin_x, y, content_w, row_h),
-                label_src=label,
+                label_src=(lambda k=key: _t(k)),
                 on_press=(lambda v=clon: self._set_centre(v)),
                 is_on_src=(lambda v=clon:
                            abs(((self._bg.center_lon - v + 180) % 360)
@@ -2778,7 +2860,7 @@ class DemoIntroScene(Scene):
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
                  int(canvas_w * 0.66), head_h),
-            text_src="Demo Tour",
+            text_src=lambda: _t("scene.demo_intro.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
@@ -2791,10 +2873,7 @@ class DemoIntroScene(Scene):
         self.add(WrappedTextWidget(
             Rect(int(canvas_w * 0.06), body_top,
                  int(canvas_w * 0.88), desc_h),
-            text_src=("A guided tour walks through the world map, "
-                      "themes, brightness, wifi, radio, alarms, "
-                      "weather and verse. Your current settings are "
-                      "restored when the tour ends."),
+            text_src=lambda: _t("demo_intro.description"),
             font_size=max(18, int(canvas_h * 0.026)),
             color_role="fg_dim",
         ))
@@ -2808,7 +2887,7 @@ class DemoIntroScene(Scene):
         y = opts_top
         self.add(CheckboxRow(
             Rect(margin_x, y, row_w, row_h),
-            label_src="Full tour (~90 sec)",
+            label_src=lambda: _t("demo_intro.option.full"),
             is_on_src=lambda: self._full,
             on_press=lambda: self._set_full(True),
             shape="radio",
@@ -2817,7 +2896,7 @@ class DemoIntroScene(Scene):
         y += row_h + gap
         self.add(CheckboxRow(
             Rect(margin_x, y, row_w, row_h),
-            label_src="Short tour (~65 sec)",
+            label_src=lambda: _t("demo_intro.option.short"),
             is_on_src=lambda: not self._full,
             on_press=lambda: self._set_full(False),
             shape="radio",
@@ -2826,7 +2905,7 @@ class DemoIntroScene(Scene):
         y += row_h + gap
         self.add(CheckboxRow(
             Rect(margin_x, y, row_w, row_h),
-            label_src="Include wifi setup",
+            label_src=lambda: _t("demo_intro.option.wifi"),
             is_on_src=lambda: self._include_wifi,
             on_press=self._toggle_wifi,
             shape="check",
@@ -2837,14 +2916,14 @@ class DemoIntroScene(Scene):
         btn_w = (canvas_w - 3 * btn_pad) // 2
         self.add(Button(
             Rect(btn_pad, action_band_y, btn_w, action_band_h),
-            label_src="CANCEL",
+            label_src=lambda: _t("button.cancel"),
             on_press=lambda: compositor.set_overlay("settings"),
             font_factor=0.42,
         ))
         self.add(Button(
             Rect(canvas_w - btn_pad - btn_w, action_band_y,
                  btn_w, action_band_h),
-            label_src="START",
+            label_src=lambda: _t("button.start"),
             on_press=self._start,
             font_factor=0.42,
             color_role="fg_bright",
@@ -2864,6 +2943,84 @@ class DemoIntroScene(Scene):
 
     def state_key(self) -> tuple:
         return super().state_key() + (self._full, self._include_wifi)
+
+
+class LanguageScene(Scene):
+    """Overlay: pick UI language. Same pattern as ThemeScene — tap a
+    row to apply + persist immediately, with the selected row drawn
+    bright and the rest dim. Languages list themselves in their native
+    name (English / Espanol / Norsk) so they're recognisable even
+    when the user has accidentally selected one they can't read."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, i18n_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._i18n = i18n_service
+        head_h = int(canvas_h * 0.14)
+        self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
+            text_src=lambda: _t("scene.language.title"),
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+        self._rows: list[Button] = []
+
+    def _apply(self, code: str) -> None:
+        self._i18n.set(code)
+
+    def _rebuild_rows(self) -> None:
+        for b in self._rows:
+            try:
+                self.widgets.remove(b)
+            except ValueError:
+                pass
+        self._rows.clear()
+        langs = self._i18n.languages
+        cur = self._i18n.lang
+        body_top = self._head_h + int(self.canvas_h * 0.04)
+        body_h = self.canvas_h - body_top - int(self.canvas_h * 0.04)
+        # Reserve cell height for up to 5 rows so layout is stable
+        # even if we add more languages later.
+        slots = max(len(langs), 5)
+        cell_h = body_h // slots
+        margin_x = int(self.canvas_w * 0.06)
+        btn_w = self.canvas_w - 2 * margin_x
+        for i, (code, name) in enumerate(langs):
+            selected = code == cur
+            mark = "▶ " if selected else "  "
+            label = f"{mark}{name}"
+            color_role = "fg_bright" if selected else "fg_dim"
+            row_y = body_top + i * cell_h
+            row_h = cell_h - 8
+            btn = Button(
+                Rect(margin_x, row_y, btn_w, row_h),
+                label_src=label,
+                on_press=lambda c=code: self._apply(c),
+                font_factor=0.55,
+                color_role=color_role,
+            )
+            self.widgets.append(btn)
+            self._rows.append(btn)
+
+    def state_key(self) -> tuple:
+        return (self._i18n.lang,
+                tuple(c for c, _ in self._i18n.languages))
+
+    def render(self) -> Image.Image:
+        self._rebuild_rows()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._rebuild_rows()
+        return super().hit(cx, cy)
 
 
 class DemoSplashScene(Scene):

@@ -1529,12 +1529,53 @@ def _icon_play(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
     draw.polygon(pts, fill=col)
 
 
+def _icon_language(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Language glyph: a stylised 'A' next to a 'T' inside a rounded
+    speech bubble — evokes the cross-script translate icon used by
+    most desktop OSes without needing a TTF lookup."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.10))
+    box = [cx - s, cy - s * 0.85,
+           cx + s, cy + s * 0.45]
+    radius = max(4, int(s * 0.30))
+    draw.rounded_rectangle(box, radius=radius, outline=col, width=w)
+    # Speech-tail
+    draw.polygon(
+        [(cx - s * 0.30, cy + s * 0.40),
+         (cx - s * 0.10, cy + s * 0.85),
+         (cx + s * 0.10, cy + s * 0.40)],
+        fill=col,
+    )
+    # Letter A on the left
+    a_h = s * 0.65
+    a_w = s * 0.50
+    a_cx = cx - s * 0.40
+    a_cy = cy - s * 0.10
+    draw.line([(a_cx - a_w / 2, a_cy + a_h / 2),
+               (a_cx, a_cy - a_h / 2)], fill=col, width=w)
+    draw.line([(a_cx, a_cy - a_h / 2),
+               (a_cx + a_w / 2, a_cy + a_h / 2)], fill=col, width=w)
+    draw.line([(a_cx - a_w * 0.30, a_cy + a_h * 0.10),
+               (a_cx + a_w * 0.30, a_cy + a_h * 0.10)],
+              fill=col, width=w)
+    # Letter T on the right
+    t_w = s * 0.50
+    t_cx = cx + s * 0.35
+    t_top = a_cy - a_h / 2
+    t_bot = a_cy + a_h / 2
+    draw.line([(t_cx - t_w / 2, t_top), (t_cx + t_w / 2, t_top)],
+              fill=col, width=w)
+    draw.line([(t_cx, t_top), (t_cx, t_bot)], fill=col, width=w)
+
+
 # Settings-list icon table — referenced by name from SettingsScene so
 # the row labels and their glyphs stay together as a single mapping.
 SETTINGS_ICONS = {
     "wifi": _icon_wifi_full,
     "speaker": _icon_speaker,
     "palette": _icon_palette,
+    "language": _icon_language,
     "globe": _icon_globe,
     "brightness": _icon_brightness,
     "play": _icon_play,
