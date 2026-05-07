@@ -31,6 +31,7 @@ EN: dict[str, str] = {
     "scene.language.title": "Language",
     "scene.wifi.title": "Wifi",
     "scene.wifi_password.title": "Wifi password — {ssid}",
+    "scene.bluetooth.title": "Bluetooth",
     "scene.verse.title": "Verse of the Day",
     "scene.weather.title": "Weather",
     "scene.station_list.title": "Stations",
@@ -46,6 +47,7 @@ EN: dict[str, str] = {
 
     # Settings rows
     "settings.row.wifi": "WIFI",
+    "settings.row.bluetooth": "BLUETOOTH",
     "settings.row.audio": "AUDIO",
     "settings.row.theme": "THEME",
     "settings.row.language": "LANGUAGE",
@@ -75,6 +77,7 @@ EN: dict[str, str] = {
     "button.cancel": "CANCEL",
     "button.save": "SAVE",
     "button.delete": "DELETE",
+    "button.forget": "FORGET",
     "button.start": "START",
     "button.stop": "STOP",
     "button.play": "PLAY",
@@ -173,6 +176,20 @@ EN: dict[str, str] = {
     "wifi.not_connected": "Not connected ({state})",
     "wifi.empty_list": "(no networks — tap RESCAN)",
     "wifi.password_hint": "(tap keys)",
+
+    # Bluetooth
+    "bluetooth.scanning": "Searching…",
+    "bluetooth.busy": "Working…",
+    "bluetooth.empty_list": (
+        "(no devices — put your speaker into pairing mode and tap RESCAN)"
+    ),
+    "bluetooth.connected": "Connected: {name}",
+    "bluetooth.idle": "(no speaker connected)",
+    "bluetooth.unavailable": "Bluetooth unavailable",
+    "bluetooth.error": "Error: {message}",
+    "bluetooth.tag.audio": "♪",
+    "bluetooth.tag.connected": "[connected]",
+    "bluetooth.tag.paired": "[paired]",
 
     # Verse / weather loading
     "verse.loading": "Loading…",
@@ -300,6 +317,7 @@ ES: dict[str, str] = {
     "scene.language.title": "Idioma",
     "scene.wifi.title": "Wifi",
     "scene.wifi_password.title": "Contrasena wifi — {ssid}",
+    "scene.bluetooth.title": "Bluetooth",
     "scene.verse.title": "Versiculo del dia",
     "scene.weather.title": "Tiempo",
     "scene.station_list.title": "Emisoras",
@@ -315,6 +333,7 @@ ES: dict[str, str] = {
 
     # Settings rows
     "settings.row.wifi": "WIFI",
+    "settings.row.bluetooth": "BLUETOOTH",
     "settings.row.audio": "AUDIO",
     "settings.row.theme": "TEMA",
     "settings.row.language": "IDIOMA",
@@ -344,6 +363,7 @@ ES: dict[str, str] = {
     "button.cancel": "CANCELAR",
     "button.save": "GUARDAR",
     "button.delete": "BORRAR",
+    "button.forget": "OLVIDAR",
     "button.start": "INICIAR",
     "button.stop": "PARAR",
     "button.play": "REPR.",
@@ -439,6 +459,21 @@ ES: dict[str, str] = {
     "wifi.not_connected": "Sin conexion ({state})",
     "wifi.empty_list": "(sin redes — toca BUSCAR)",
     "wifi.password_hint": "(toca las teclas)",
+
+    # Bluetooth
+    "bluetooth.scanning": "Buscando…",
+    "bluetooth.busy": "Trabajando…",
+    "bluetooth.empty_list": (
+        "(sin dispositivos — pon el altavoz en modo emparejamiento "
+        "y toca BUSCAR)"
+    ),
+    "bluetooth.connected": "Conectado: {name}",
+    "bluetooth.idle": "(ningun altavoz conectado)",
+    "bluetooth.unavailable": "Bluetooth no disponible",
+    "bluetooth.error": "Error: {message}",
+    "bluetooth.tag.audio": "♪",
+    "bluetooth.tag.connected": "[conectado]",
+    "bluetooth.tag.paired": "[emparejado]",
 
     # Loading
     "verse.loading": "Cargando…",
@@ -562,6 +597,7 @@ NO: dict[str, str] = {
     "scene.language.title": "Sprak",
     "scene.wifi.title": "Wifi",
     "scene.wifi_password.title": "Wifi-passord — {ssid}",
+    "scene.bluetooth.title": "Bluetooth",
     "scene.verse.title": "Dagens vers",
     "scene.weather.title": "Vaer",
     "scene.station_list.title": "Stasjoner",
@@ -577,6 +613,7 @@ NO: dict[str, str] = {
 
     # Settings rows
     "settings.row.wifi": "WIFI",
+    "settings.row.bluetooth": "BLUETOOTH",
     "settings.row.audio": "LYD",
     "settings.row.theme": "TEMA",
     "settings.row.language": "SPRAK",
@@ -606,6 +643,7 @@ NO: dict[str, str] = {
     "button.cancel": "AVBRYT",
     "button.save": "LAGRE",
     "button.delete": "SLETT",
+    "button.forget": "GLEM",
     "button.start": "START",
     "button.stop": "STOPP",
     "button.play": "SPILL",
@@ -701,6 +739,21 @@ NO: dict[str, str] = {
     "wifi.not_connected": "Ikke tilkoblet ({state})",
     "wifi.empty_list": "(ingen nettverk — trykk SOK PA NYTT)",
     "wifi.password_hint": "(trykk taster)",
+
+    # Bluetooth
+    "bluetooth.scanning": "Soker…",
+    "bluetooth.busy": "Arbeider…",
+    "bluetooth.empty_list": (
+        "(ingen enheter — sett hoyttaleren i parringsmodus "
+        "og trykk SOK PA NYTT)"
+    ),
+    "bluetooth.connected": "Tilkoblet: {name}",
+    "bluetooth.idle": "(ingen hoyttaler tilkoblet)",
+    "bluetooth.unavailable": "Bluetooth utilgjengelig",
+    "bluetooth.error": "Feil: {message}",
+    "bluetooth.tag.audio": "♪",
+    "bluetooth.tag.connected": "[tilkoblet]",
+    "bluetooth.tag.paired": "[parret]",
 
     # Loading
     "verse.loading": "Laster…",

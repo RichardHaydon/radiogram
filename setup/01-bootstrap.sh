@@ -22,13 +22,13 @@ APP_USER="riha"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CMDLINE="/boot/firmware/cmdline.txt"
 
-echo "==> 1/7  apt: install runtime deps"
+echo "==> 1/9  apt: install runtime deps"
 apt-get update
 # Bluetooth packages are installed unconditionally — they're harmless when
 # unused and let the audio output picker route MPD to a paired BT speaker
-# without re-running setup. Pairing itself is a one-time SSH step
-# (bluetoothctl), then add an audio_output { device "bluealsa:..." }
-# block to /etc/mpd.conf using the helper at setup/02-add-bt-output.sh.
+# without re-running setup. Pairing is now handled in-app via
+# Settings → BLUETOOTH (BluetoothService shells out to the privileged
+# helper installed below); manual `bluetoothctl` is no longer required.
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python3-pil \
     python3-numpy \
@@ -39,19 +39,20 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     rpi-connect-lite \
     bluez \
     bluez-tools \
-    bluealsa
+    bluez-alsa-utils \
+    libasound2-plugin-bluez
 
-echo "==> 2/7  Persistent state dir at $DATA_DIR"
+echo "==> 2/9  Persistent state dir at $DATA_DIR"
 install -d -o "$APP_USER" -g "$APP_USER" "$DATA_DIR"
 
-echo "==> 3/7  udev rules: backlight perms + touch rotation"
+echo "==> 3/9  udev rules: backlight perms + touch rotation"
 install -m 0644 "$SRC_DIR/setup/99-clockradio-touch.rules" \
     /etc/udev/rules.d/99-clockradio-touch.rules
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=backlight
 udevadm trigger --subsystem-match=input
 
-echo "==> 4/7  Display rotation: 90 deg CW via $CMDLINE"
+echo "==> 4/9  Display rotation: 90 deg CW via $CMDLINE"
 if [ -f "$CMDLINE" ] && ! grep -q "video=DSI-1:" "$CMDLINE"; then
     # cmdline.txt must remain a single line. Append before the trailing newline.
     sed -i 's|$| video=DSI-1:panel_orientation=right_side_up|' "$CMDLINE"
@@ -60,7 +61,7 @@ else
     echo "    (already present or no cmdline.txt — skipping)"
 fi
 
-echo "==> 5/7  Install app to $APP_DIR"
+echo "==> 5/9  Install app to $APP_DIR"
 install -d "$APP_DIR/app"
 install -m 0644 "$SRC_DIR/app/"*.py "$APP_DIR/app/"
 # Bundled assets (e.g. world map land mask). Optional — only copy if
@@ -76,23 +77,37 @@ if [ -d "$SRC_DIR/app/data" ]; then
     done
 fi
 
-echo "==> 6/8  systemd unit + tty1 ownership"
+echo "==> 6/9  systemd unit + tty1 ownership"
 install -m 0644 "$SRC_DIR/systemd/clockradio.service" \
     /etc/systemd/system/clockradio.service
 systemctl daemon-reload
 systemctl disable getty@tty1.service 2>/dev/null || true
 systemctl enable clockradio.service
 
-echo "==> 7/8  sudoers: $APP_USER may manage wifi + restart mpd"
-# Two narrow rules:
+echo "==> 7/9  Bluetooth output helper at /usr/local/sbin/clockradio-bt-output"
+# Privileged shim that BluetoothService shells out to via `sudo -n`.
+# Adds/removes the bluealsa MPD output block + restarts mpd. Lives
+# under /usr/local/sbin so the sudoers rule below pins to a stable
+# absolute path, not to a path inside the user-writable repo checkout.
+install -m 0755 -o root -g root \
+    "$SRC_DIR/setup/bt-output-helper.sh" \
+    /usr/local/sbin/clockradio-bt-output
+
+echo "==> 8/9  sudoers: $APP_USER may manage wifi + bluetooth + restart mpd"
+# Narrow rules — each pinned to a single absolute command:
 #   - nmcli: WifiScene needs to rescan / connect / forget (NetworkManager
 #     mutations require root).
+#   - bluetoothctl: BluetoothService scans/pairs/forgets BT speakers.
+#   - clockradio-bt-output: privileged helper that edits mpd.conf +
+#     restarts mpd after a successful pair/forget.
 #   - systemctl restart mpd: MPD watchdog. When MPD wedges on a stalled
 #     stream, the python-mpd client times out and can't recover without
 #     a daemon restart, so MPDService asks systemd to bounce it.
 SUDOERS_FILE="/etc/sudoers.d/clockradio"
 cat > "$SUDOERS_FILE" <<EOF
 $APP_USER ALL=(root) NOPASSWD: /usr/bin/nmcli
+$APP_USER ALL=(root) NOPASSWD: /usr/bin/bluetoothctl
+$APP_USER ALL=(root) NOPASSWD: /usr/local/sbin/clockradio-bt-output
 $APP_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart mpd
 EOF
 chmod 0440 "$SUDOERS_FILE"
@@ -100,7 +115,7 @@ visudo -cf "$SUDOERS_FILE" >/dev/null
 # Old single-purpose file from earlier slices — superseded.
 rm -f /etc/sudoers.d/clockradio-nmcli
 
-echo "==> 8/8  rpi-connect-lite: enable shell access (run as $APP_USER)"
+echo "==> 9/9  rpi-connect-lite: enable shell access (run as $APP_USER)"
 echo "    After reboot, run as $APP_USER:"
 echo "        rpi-connect on"
 echo "        rpi-connect signin"

@@ -43,6 +43,7 @@ from PIL import Image
 from alarm import AlarmStore
 from alarm_service import AlarmService
 from background_service import BackgroundService
+from bluetooth_service import BluetoothService
 from brightness_service import BrightnessService
 from i18n_service import I18nService
 from mpd_service import MPDService
@@ -58,11 +59,11 @@ from demo_service import CaptionOverlay, DemoService
 import scenes as _scenes_mod
 from scenes import (
     AboutScene, AlarmEditScene, AlarmFiringScene, AlarmListScene,
-    AudioOutputScene, BackgroundScene, BrightnessScene, DemoIntroScene,
-    DemoSplashScene, IdleScene, LanguageScene, LauncherScene,
-    MapCenterScene, QuickPanelScene, RadioScene, SettingsScene,
-    StationListScene, ThemeScene, VerseScene, WeatherScene,
-    WifiPasswordScene, WifiScene,
+    AudioOutputScene, BackgroundScene, BluetoothScene, BrightnessScene,
+    DemoIntroScene, DemoSplashScene, IdleScene, LanguageScene,
+    LauncherScene, MapCenterScene, QuickPanelScene, RadioScene,
+    SettingsScene, StationListScene, ThemeScene, VerseScene,
+    WeatherScene, WifiPasswordScene, WifiScene,
 )
 
 
@@ -782,6 +783,14 @@ def main() -> int:
     wifi = WifiService()
     wifi.start()
 
+    # BluetoothService takes a handle to MPDService so a successful
+    # pair can route MPD to the new bluealsa output without the user
+    # having to navigate to the audio-output picker. The privileged
+    # helper that mutates /etc/mpd.conf lives at the path below — see
+    # setup/01-bootstrap.sh + setup/bt-output-helper.sh.
+    bluetooth = BluetoothService(mpd_service=mpd)
+    bluetooth.start()
+
     weather = WeatherService(LOCATION_PATH)
     weather.start()
 
@@ -975,6 +984,10 @@ def main() -> int:
     scenes["wifi_password"] = WifiPasswordScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, wifi_service=wifi,
+    )
+    scenes["bluetooth"] = BluetoothScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, bluetooth_service=bluetooth,
     )
     scenes["weather"] = WeatherScene(
         theme, display.canvas_w, display.canvas_h,
@@ -1190,6 +1203,7 @@ def main() -> int:
     finally:
         alarms.stop()
         wifi.stop()
+        bluetooth.stop()
         weather.stop()
         verse.stop()
         mpd.stop()

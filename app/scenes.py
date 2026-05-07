@@ -813,6 +813,8 @@ class SettingsScene(Scene):
         rows = [
             ("settings.row.wifi",
              lambda: compositor.set_overlay("wifi"), "wifi"),
+            ("settings.row.bluetooth",
+             lambda: compositor.set_overlay("bluetooth"), "bluetooth"),
             ("settings.row.audio",
              lambda: compositor.set_overlay("audio_output"), "speaker"),
             ("settings.row.theme",
@@ -829,8 +831,8 @@ class SettingsScene(Scene):
              lambda: compositor.set_overlay("about"), "info"),
         ]
         # Reserve enough cell height for any future addition without
-        # wobbling the existing layout. Now 8 rows (added LANGUAGE).
-        cell_h = body_h // max(len(rows), 8)
+        # wobbling the existing layout. Now 9 rows (added BLUETOOTH).
+        cell_h = body_h // max(len(rows), 9)
         for i, (key, action, icon_name) in enumerate(rows):
             self.add(IconRow(
                 Rect(int(canvas_w * 0.06), body_top + i * cell_h,
@@ -1341,6 +1343,291 @@ class WifiPasswordScene(Scene):
 
     def hit(self, cx: float, cy: float) -> Button | None:
         self._build()
+        return super().hit(cx, cy)
+
+
+class BluetoothScene(Scene):
+    """Overlay: discover, pair, and forget Bluetooth speakers.
+
+    UX (single-device for v1):
+      • The currently-paired speaker (if any) is pinned at the top with
+        a FORGET button. "Currently paired" = the bluealsa MAC found in
+        /etc/mpd.conf, surfaced by BluetoothService.status.paired_mac.
+      • Below it, the list of discovered (and known-but-unpaired)
+        devices. Tap a row → pair, trust, connect, add MPD output,
+        switch MPD to it. The whole pipeline lives on the service
+        worker thread; the UI just shows busy/last_action/last_error.
+      • SCAN turns on bluez discovery for ~12 s.
+
+    The scene auto-rescans on enter (matches WifiScene) so the user
+    sees a fresh list every time they open it. Devices are paginated in
+    MAX_ROWS-sized chunks via ▲/▼ buttons in the header right.
+    """
+
+    MAX_ROWS = 5      # one fewer than wifi to leave room for the
+                      # "currently paired" header row + status line.
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, bluetooth_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._bt = bluetooth_service
+        self._page = 0
+        head_h = int(canvas_h * 0.12)
+        self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        # "Bluetooth" + "Bluetooth" translations are 8–9 chars long —
+        # too wide for WifiScene's 0.22-width title rect at font 0.55,
+        # so we drop one notch to keep the label legible without
+        # ellipsis. SCAN button retains the same 0.20-width slot since
+        # NO's "SOK PA NYTT" needs every pixel of it.
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.22), head_h),
+            text_src=lambda: _t("scene.bluetooth.title"),
+            font_factor=0.45,
+            color_role="fg_dim",
+        ))
+        self.add(Button(
+            Rect(int(canvas_w * 0.44), int(head_h * 0.10),
+                 int(canvas_w * 0.20), int(head_h * 0.80)),
+            label_src=lambda: _t("button.rescan"),
+            on_press=lambda: self._bt.scan(),
+            font_factor=0.42,
+        ))
+        # Right-anchored page label + ▲/▼ — same affordance the wifi /
+        # station / background scenes use, so paging looks identical
+        # everywhere a list might overflow.
+        btn_h = int(head_h * 0.80)
+        btn_w = btn_h
+        right_pad = int(canvas_w * 0.025)
+        gap = int(canvas_w * 0.012)
+        down_x = canvas_w - right_pad - btn_w
+        up_x = down_x - btn_w - gap
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.66), 0,
+                 up_x - int(canvas_w * 0.66) - gap, head_h),
+            text_src=self._page_label,
+            font_factor=0.40,
+            color_role="fg_dim",
+        ))
+        self.add(IconButton(
+            Rect(up_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_up,
+            icon_drawer=_icon_chevron_up,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
+        ))
+        self.add(IconButton(
+            Rect(down_x, int(head_h * 0.10), btn_w, btn_h),
+            on_press=self._page_down,
+            icon_drawer=_icon_chevron_down,
+            color_role="fg_accent",
+            outline_width=2,
+            icon_factor=0.65,
+        ))
+        # Status line under the header.
+        stat_h = int(canvas_h * 0.10)
+        self._stat_h = stat_h
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.04), head_h,
+                 int(canvas_w * 0.92), stat_h),
+            text_src=lambda: self._status_line(),
+            font_factor=0.42,
+            font_role="regular",
+            color_role="fg_subtle",
+        ))
+        # Dynamic widgets — rebuilt each render/hit so the displayed
+        # rows always reflect the latest snapshot.
+        self._row_widgets: list[Widget] = []
+
+    # --- status / paging ----------------------------------------------
+
+    def _status_line(self) -> str:
+        s = self._bt.status
+        if not s.available:
+            return _t("bluetooth.unavailable")
+        if s.busy:
+            return _t("bluetooth.busy")
+        if s.discovering:
+            return _t("bluetooth.scanning")
+        if s.last_error:
+            return _t("bluetooth.error", message=s.last_error)
+        if s.last_action:
+            return s.last_action
+        if s.paired_mac:
+            name = next(
+                (d.name for d in s.devices if d.mac == s.paired_mac),
+                s.paired_mac)
+            return _t("bluetooth.connected", name=name)
+        return _t("bluetooth.idle")
+
+    def _other_devices(self) -> list:
+        """Devices to render in the scrollable list — everyone except
+        the currently-paired speaker, which is pinned in its own header
+        row above the list."""
+        s = self._bt.status
+        return [d for d in s.devices if d.mac != s.paired_mac]
+
+    def _max_page(self) -> int:
+        n = len(self._other_devices())
+        if n <= self.MAX_ROWS:
+            return 0
+        return (n - 1) // self.MAX_ROWS
+
+    def _page_label(self) -> str:
+        n = len(self._other_devices())
+        if n <= self.MAX_ROWS:
+            return ""
+        total = self._max_page() + 1
+        page = min(self._page, total - 1)
+        return f"{page + 1}/{total}"
+
+    def _page_up(self) -> None:
+        if self._page > 0:
+            self._page -= 1
+
+    def _page_down(self) -> None:
+        if self._page < self._max_page():
+            self._page += 1
+
+    # --- actions -------------------------------------------------------
+
+    def _on_pick(self, mac: str, name: str) -> None:
+        s = self._bt.status
+        if mac == s.paired_mac:
+            return  # already paired/connected; tapping is a no-op
+        self._bt.pair(mac, name)
+
+    def _on_forget(self, mac: str) -> None:
+        self._bt.forget(mac)
+
+    def on_show(self) -> None:
+        # Auto-rescan when the user opens the BT scene. bluez caches the
+        # discovered set across runs but a fresh scan is what the user
+        # expects after putting a speaker into pairing mode.
+        if self._bt.status.available and not self._bt.status.busy:
+            self._bt.scan()
+
+    # --- layout --------------------------------------------------------
+
+    def _rebuild_rows(self) -> None:
+        for w in self._row_widgets:
+            try:
+                self.widgets.remove(w)
+            except ValueError:
+                pass
+        self._row_widgets.clear()
+        s = self._bt.status
+
+        body_top = self._head_h + self._stat_h + int(self.canvas_h * 0.02)
+        body_bot = self.canvas_h - int(self.canvas_h * 0.02)
+        margin_x = int(self.canvas_w * 0.04)
+        inner_w = self.canvas_w - 2 * margin_x
+
+        # Pinned "currently paired" row at the top of the body, with
+        # FORGET on the right. Renders even if the device hasn't been
+        # rediscovered this session — paired_mac is the source of truth.
+        y = body_top
+        if s.paired_mac:
+            paired_dev = next(
+                (d for d in s.devices if d.mac == s.paired_mac), None)
+            paired_name = paired_dev.name if paired_dev else s.paired_mac
+            row_h = int(self.canvas_h * 0.10)
+            forget_w = int(self.canvas_w * 0.22)
+            label_w = inner_w - forget_w - int(self.canvas_w * 0.02)
+            connected = bool(paired_dev and paired_dev.connected)
+            mark = "▶ " if connected else "  "
+            label = f"{mark}{paired_name}"
+            label_widget = TextWidget(
+                Rect(margin_x, y, label_w, row_h),
+                text_src=label,
+                font_factor=0.50,
+                color_role="fg_bright",
+            )
+            self.widgets.append(label_widget)
+            self._row_widgets.append(label_widget)
+            forget_btn = Button(
+                Rect(margin_x + label_w + int(self.canvas_w * 0.02),
+                     y + int(row_h * 0.10),
+                     forget_w, int(row_h * 0.80)),
+                label_src=lambda: _t("button.forget"),
+                on_press=lambda mac=s.paired_mac: self._on_forget(mac),
+                font_factor=0.42,
+                color_role="fg_dim",
+            )
+            self.widgets.append(forget_btn)
+            self._row_widgets.append(forget_btn)
+            y += row_h + int(self.canvas_h * 0.01)
+
+        # Discovered list — paginated.
+        others = self._other_devices()
+        max_p = self._max_page()
+        if self._page > max_p:
+            self._page = max_p
+        if not others:
+            empty = TextWidget(
+                Rect(0, y, self.canvas_w, body_bot - y),
+                text_src=lambda: _t("bluetooth.empty_list"),
+                font_factor=0.05,
+                color_role="fg_dim",
+                font_role="regular",
+            )
+            self.widgets.append(empty)
+            self._row_widgets.append(empty)
+            return
+        start = self._page * self.MAX_ROWS
+        page_devs = others[start:start + self.MAX_ROWS]
+        cell_h = max(40, (body_bot - y) // self.MAX_ROWS)
+        for i, d in enumerate(page_devs):
+            tags = []
+            if d.is_audio:
+                tags.append(_t("bluetooth.tag.audio"))
+            if d.connected:
+                tags.append(_t("bluetooth.tag.connected"))
+            elif d.paired:
+                tags.append(_t("bluetooth.tag.paired"))
+            tag_str = ("   " + "  ".join(tags)) if tags else ""
+            label = f"  {d.name}{tag_str}"
+            # Render every tappable row bright — `is_audio` is only set
+            # for paired devices (we don't run `bluetoothctl info` for
+            # the discovery list for cost reasons), so dimming the
+            # unknown-type rows would dim the very devices the user is
+            # trying to pair to. The ♪ tag still flags confirmed audio.
+            color_role = "fg_bright"
+            btn = Button(
+                Rect(margin_x, y + i * cell_h,
+                     inner_w, cell_h - 8),
+                label_src=label,
+                on_press=lambda mac=d.mac, name=d.name:
+                    self._on_pick(mac, name),
+                font_factor=0.32,
+                color_role=color_role,
+            )
+            self.widgets.append(btn)
+            self._row_widgets.append(btn)
+
+    def state_key(self) -> tuple:
+        s = self._bt.status
+        return (
+            s.available, s.busy, s.discovering, s.paired_mac,
+            s.last_error, s.last_action,
+            tuple((d.mac, d.name, d.connected, d.paired, d.is_audio)
+                  for d in s.devices),
+            self._page,
+        )
+
+    def render(self) -> Image.Image:
+        self._rebuild_rows()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._rebuild_rows()
         return super().hit(cx, cy)
 
 

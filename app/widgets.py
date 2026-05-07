@@ -1512,6 +1512,28 @@ def _icon_wifi_full(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
     _icon_wifi(draw, rect, col, connected=True)
 
 
+def _icon_bluetooth(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Bluetooth runic-B glyph — central vertical spine + two crossed
+    diagonals that form the upper and lower 'bumps'. Drawn as one
+    continuous polyline so the corner joins look clean at small sizes."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.16))
+    # All offsets are relative to a unit cell, scaled by s. Walking the
+    # path in this order traces the glyph without any double-strokes:
+    #   bottom-bump-left → bottom-bump-tip → bottom-point → top-point
+    #     → top-bump-tip → top-bump-left
+    pts = [
+        (cx - s * 0.45, cy - s * 0.50),   # bottom bump anchor (upper-L)
+        (cx + s * 0.45, cy + s * 0.50),   # bottom bump tip
+        (cx,            cy + s * 1.00),   # bottom point
+        (cx,            cy - s * 1.00),   # top point
+        (cx + s * 0.45, cy - s * 0.50),   # top bump tip
+        (cx - s * 0.45, cy + s * 0.50),   # top bump anchor (lower-L)
+    ]
+    draw.line(pts, fill=col, width=w, joint="curve")
+
+
 def _icon_play(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
     """Play arrow inside a circle — used as the DEMO settings-row glyph."""
     cx, cy = rect.cx, rect.cy
@@ -1574,6 +1596,7 @@ def _icon_language(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
 SETTINGS_ICONS = {
     "wifi": _icon_wifi_full,
     "speaker": _icon_speaker,
+    "bluetooth": _icon_bluetooth,
     "palette": _icon_palette,
     "language": _icon_language,
     "globe": _icon_globe,
