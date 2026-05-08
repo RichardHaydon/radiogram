@@ -59,9 +59,10 @@ from demo_service import CaptionOverlay, DemoService
 import scenes as _scenes_mod
 from scenes import (
     AboutScene, AlarmEditScene, AlarmFiringScene, AlarmListScene,
-    AudioOutputScene, BackgroundScene, BluetoothScene,
-    BluetoothSpeakerScene, BrightnessScene, DemoIntroScene,
-    DemoSplashScene, IdleScene, LanguageScene, LauncherScene,
+    AudioOutputScene, AudioSettingsScene, BackgroundScene,
+    BluetoothPlayingScene, BluetoothScene, BluetoothSpeakerScene,
+    BrightnessScene, DemoIntroScene, DemoSplashScene,
+    DisplaySettingsScene, IdleScene, LanguageScene, LauncherScene,
     MapCenterScene, QuickPanelScene, RadioScene, SettingsScene,
     StationListScene, ThemeScene, VerseScene, WeatherScene,
     WifiPasswordScene, WifiScene,
@@ -938,6 +939,12 @@ def main() -> int:
     def pick_scene() -> str:
         if alarms.firing:
             return "alarm"
+        # A phone streaming via BT takes precedence over the radio
+        # scene because the user paused MPD (or sink-mode did it for
+        # them) and what's actually audible is the phone audio. Show
+        # a home that reflects that — including a DISCONNECT button.
+        if bluetooth.status.streaming_from:
+            return "bt_playing"
         return "radio" if mpd.status.active else "idle"
 
     compositor = Compositor(display, scenes, pick_scene,
@@ -956,14 +963,22 @@ def main() -> int:
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, mpd_service=mpd, station_service=stations,
     )
+    scenes["bt_playing"] = BluetoothPlayingScene(
+        theme, display.canvas_w, display.canvas_h,
+        alarm_service=alarms, mpd_service=mpd,
+        bluetooth_service=bluetooth, compositor=compositor,
+    )
     # Idle + Radio + the alarm-firing scene opt in to the world map
     # background. Alarm-firing inherits because the user wanted the
     # whole device to feel coherent at 7am — same map, halo'd clock,
     # then a single STOP button rather than a flat black emergency
-    # screen.
+    # screen. BT-playing inherits for the same reason — it IS a home
+    # screen variant; switching backgrounds when the phone connects
+    # would feel jarring.
     scenes["idle"]._background_provider = bg_provider
     scenes["radio"]._background_provider = bg_provider
     scenes["alarm"]._background_provider = bg_provider
+    scenes["bt_playing"]._background_provider = bg_provider
     scenes["launcher"] = LauncherScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor,
@@ -985,6 +1000,14 @@ def main() -> int:
         compositor=compositor, station_service=stations,
     )
     scenes["settings"] = SettingsScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor,
+    )
+    scenes["audio_settings"] = AudioSettingsScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor,
+    )
+    scenes["display_settings"] = DisplaySettingsScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor,
     )

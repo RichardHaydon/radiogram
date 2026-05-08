@@ -1593,6 +1593,40 @@ def _icon_language(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
 
 # Settings-list icon table — referenced by name from SettingsScene so
 # the row labels and their glyphs stay together as a single mapping.
+def _icon_monitor(draw: ImageDraw.ImageDraw, rect: Rect, col) -> None:
+    """Screen with a small base — represents the DISPLAY settings group
+    (theme + background + brightness). Outline-only screen + filled
+    stand+base so the silhouette reads clearly even at the 64-px
+    settings-tile size."""
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.42
+    w = max(2, int(s * 0.12))
+    sw = s * 1.7
+    sh = s * 1.05
+    sx = cx - sw / 2
+    sy = cy - sh / 2 - s * 0.18
+    draw.rounded_rectangle(
+        [sx, sy, sx + sw, sy + sh],
+        radius=int(s * 0.10),
+        outline=col, width=w,
+    )
+    stand_top = sy + sh + max(2, int(s * 0.02))
+    stand_w = s * 0.45
+    stand_h = s * 0.22
+    draw.rectangle(
+        [cx - stand_w / 2, stand_top,
+         cx + stand_w / 2, stand_top + stand_h],
+        fill=col,
+    )
+    base_w = s * 1.05
+    base_h = max(3, int(s * 0.10))
+    draw.rectangle(
+        [cx - base_w / 2, stand_top + stand_h,
+         cx + base_w / 2, stand_top + stand_h + base_h],
+        fill=col,
+    )
+
+
 SETTINGS_ICONS = {
     "wifi": _icon_wifi_full,
     "speaker": _icon_speaker,
@@ -1601,6 +1635,7 @@ SETTINGS_ICONS = {
     "language": _icon_language,
     "globe": _icon_globe,
     "brightness": _icon_brightness,
+    "monitor": _icon_monitor,
     "play": _icon_play,
     "info": _icon_info,
 }

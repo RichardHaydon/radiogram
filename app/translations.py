@@ -33,6 +33,8 @@ EN: dict[str, str] = {
     "scene.wifi_password.title": "Wifi password — {ssid}",
     "scene.bluetooth.title": "Bluetooth",
     "scene.bluetooth_speaker.title": "External speaker",
+    "scene.audio_settings.title": "Audio",
+    "scene.display_settings.title": "Display",
     "scene.verse.title": "Verse of the Day",
     "scene.weather.title": "Weather",
     "scene.station_list.title": "Stations",
@@ -50,6 +52,8 @@ EN: dict[str, str] = {
     "settings.row.wifi": "WIFI",
     "settings.row.bluetooth": "BLUETOOTH",
     "settings.row.audio": "AUDIO",
+    "settings.row.output": "OUTPUT",
+    "settings.row.display": "DISPLAY",
     "settings.row.theme": "THEME",
     "settings.row.language": "LANGUAGE",
     "settings.row.background": "BACKGROUND",
@@ -216,6 +220,8 @@ EN: dict[str, str] = {
     "bluetooth.button.forget_phone": "FORGET PHONE",
     "bluetooth.link.speaker": "Connect external speaker  ›",
     "bluetooth.unknown_name": "(this radio)",
+    # Home-screen variant shown while a phone is streaming.
+    "bluetooth.home.from_phone": "FROM YOUR PHONE",
 
     # Verse / weather loading
     "verse.loading": "Loading…",
@@ -345,6 +351,8 @@ ES: dict[str, str] = {
     "scene.wifi_password.title": "Contrasena wifi — {ssid}",
     "scene.bluetooth.title": "Bluetooth",
     "scene.bluetooth_speaker.title": "Altavoz externo",
+    "scene.audio_settings.title": "Audio",
+    "scene.display_settings.title": "Pantalla",
     "scene.verse.title": "Versiculo del dia",
     "scene.weather.title": "Tiempo",
     "scene.station_list.title": "Emisoras",
@@ -362,6 +370,8 @@ ES: dict[str, str] = {
     "settings.row.wifi": "WIFI",
     "settings.row.bluetooth": "BLUETOOTH",
     "settings.row.audio": "AUDIO",
+    "settings.row.output": "SALIDA",
+    "settings.row.display": "PANTALLA",
     "settings.row.theme": "TEMA",
     "settings.row.language": "IDIOMA",
     "settings.row.background": "FONDO",
@@ -525,6 +535,7 @@ ES: dict[str, str] = {
     "bluetooth.button.forget_phone": "OLVIDAR TELEFONO",
     "bluetooth.link.speaker": "Conectar altavoz externo  ›",
     "bluetooth.unknown_name": "(esta radio)",
+    "bluetooth.home.from_phone": "DESDE TU TELEFONO",
 
     # Loading
     "verse.loading": "Cargando…",
@@ -650,6 +661,8 @@ NO: dict[str, str] = {
     "scene.wifi_password.title": "Wifi-passord — {ssid}",
     "scene.bluetooth.title": "Bluetooth",
     "scene.bluetooth_speaker.title": "Ekstern hoyttaler",
+    "scene.audio_settings.title": "Lyd",
+    "scene.display_settings.title": "Skjerm",
     "scene.verse.title": "Dagens vers",
     "scene.weather.title": "Vaer",
     "scene.station_list.title": "Stasjoner",
@@ -667,6 +680,8 @@ NO: dict[str, str] = {
     "settings.row.wifi": "WIFI",
     "settings.row.bluetooth": "BLUETOOTH",
     "settings.row.audio": "LYD",
+    "settings.row.output": "UTGANG",
+    "settings.row.display": "SKJERM",
     "settings.row.theme": "TEMA",
     "settings.row.language": "SPRAK",
     "settings.row.background": "BAKGRUNN",
@@ -830,6 +845,7 @@ NO: dict[str, str] = {
     "bluetooth.button.forget_phone": "GLEM TELEFON",
     "bluetooth.link.speaker": "Koble til ekstern hoyttaler  ›",
     "bluetooth.unknown_name": "(denne radioen)",
+    "bluetooth.home.from_phone": "FRA TELEFONEN DIN",
 
     # Loading
     "verse.loading": "Laster…",

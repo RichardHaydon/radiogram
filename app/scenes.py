@@ -602,6 +602,171 @@ class RadioScene(Scene):
         return super().render()
 
 
+def _add_bt_transport_footer(scene: "Scene", bluetooth_service,
+                             mpd_service, canvas_w: int, canvas_h: int,
+                             *, x_offset: int = 0,
+                             frac: float = 0.10) -> None:
+    """Variant of `_add_transport_footer` for the BluetoothPlayingScene.
+    Same 4-zone strip, but the leftmost button is DISCONNECT (drops the
+    phone link, leaves the pairing intact) instead of PLAY/STOP. Volume
+    keeps working — bluealsa-aplay shares the ALSA mixer with MPD, so
+    the same VOL−/+ buttons adjust the phone audio as they would adjust
+    the radio."""
+    foot_h = int(canvas_h * frac)
+    foot_y = canvas_h - foot_h
+    inner_w = canvas_w - x_offset
+    play_w = int(inner_w * 0.30)   # wider — "DISCONNECT" needs the room
+    minus_w = int(inner_w * 0.24)
+    readout_w = int(inner_w * 0.20)
+    plus_w = inner_w - play_w - minus_w - readout_w
+
+    def _disconnect() -> None:
+        # Find the streaming phone's MAC by walking the device list
+        # for the first connected paired non-speaker (mirrors the
+        # logic in BluetoothScene._connected_mac). Falls back to a
+        # plain `set_discoverable(False)` if nothing matches — which
+        # is itself a useful safety net (closes the door at minimum).
+        s = bluetooth_service.status
+        for d in s.devices:
+            if d.connected and d.paired and not d.is_audio \
+                    and d.mac != s.paired_mac:
+                bluetooth_service.disconnect(d.mac)
+                return
+        bluetooth_service.set_discoverable(False)
+
+    scene.add(Button(
+        Rect(x_offset, foot_y, play_w, foot_h),
+        label_src=lambda: _t("bluetooth.button.disconnect"),
+        on_press=_disconnect,
+        font_factor=0.36,
+        color_role="fg_bright",
+    ))
+    scene.add(Button(
+        Rect(x_offset + play_w, foot_y, minus_w, foot_h),
+        label_src=lambda: _t("button.vol_down"),
+        on_press=lambda: mpd_service.command("vol_down"),
+        font_factor=0.42,
+    ))
+    scene.add(TextWidget(
+        Rect(x_offset + play_w + minus_w, foot_y, readout_w, foot_h),
+        text_src=lambda: f"{mpd_service.status.volume}",
+        font_factor=0.55,
+        color_role="fg_dim",
+    ))
+    scene.add(Button(
+        Rect(x_offset + play_w + minus_w + readout_w,
+             foot_y, plus_w, foot_h),
+        label_src=lambda: _t("button.vol_up"),
+        on_press=lambda: mpd_service.command("vol_up"),
+        font_factor=0.42,
+    ))
+
+
+class BluetoothPlayingScene(Scene):
+    """Home scene shown automatically while a phone is streaming to the
+    radio over A2DP. Same shape as IdleScene/RadioScene (clock + body
+    + footer) but the body announces the streaming source and the
+    footer's primary action is DISCONNECT instead of PLAY/STOP.
+
+    Selected by `pick_scene` in clockradio.main when
+    `bluetooth.status.streaming_from` is non-empty. When the phone
+    hangs up, streaming_from clears and the user lands back on
+    IdleScene (or RadioScene if MPD auto-resumes its previous play)."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 alarm_service, mpd_service, bluetooth_service,
+                 compositor):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._bt = bluetooth_service
+
+        footer_h = int(canvas_h * 0.10)
+        body_h = canvas_h - footer_h
+
+        # Clock at the top — same alt-layout dance as IdleScene so
+        # globe backgrounds get the corner-clock treatment that keeps
+        # the daylit hemisphere clean.
+        clock_h = int(canvas_h * 0.40)
+        self._clock_rect_default = Rect(0, 0, canvas_w, clock_h)
+        self._clock_factor_default = 0.62
+        self._clock_rect_globe = Rect(
+            int(canvas_w * 0.02), int(canvas_h * 0.02),
+            int(canvas_w * 0.34), int(canvas_h * 0.18),
+        )
+        self._clock_factor_globe = 0.78
+        self._clock = ClockWidget(
+            self._clock_rect_default,
+            font_factor=self._clock_factor_default,
+        )
+        self.add(self._clock)
+
+        # Streaming-source band: subtitle + big phone name. Sits between
+        # the clock and the action footer.
+        np_y = clock_h
+        np_h = body_h - clock_h
+        sub_h = int(np_h * 0.30)
+        name_h = int(np_h * 0.50)
+        self.add(TextWidget(
+            Rect(0, np_y, canvas_w, sub_h),
+            text_src=lambda: _t("bluetooth.home.from_phone"),
+            font_role="regular",
+            font_factor=0.50,
+            color_role="fg_subtle",
+        ))
+        self.add(TextWidget(
+            Rect(0, np_y + sub_h, canvas_w, name_h),
+            text_src=lambda: (self._bt.status.streaming_from
+                              or self._bt.status.connected_phone
+                              or _t("bluetooth.unknown_name")),
+            font_factor=0.65,
+            color_role="fg_accent",
+        ))
+
+        # Footer: alarm pill (same as IdleScene) + BT transport
+        # (DISCONNECT + VOL controls).
+        alarm_w = int(canvas_w * 0.30)
+        foot_y = canvas_h - footer_h
+        bell_size = int(footer_h * 0.55)
+        bell_x = int(canvas_w * 0.025)
+        self.add(Button(
+            Rect(bell_x, foot_y, alarm_w - bell_x, footer_h),
+            label_src=lambda: _format_footer_alarm(alarm_service),
+            on_press=lambda: compositor.set_overlay("alarm_list"),
+            outline_width=0,
+            color_role="fg_bright",
+            font_factor=0.52,
+            halo=True,
+        ))
+        self.add(BellIconWidget(
+            Rect(bell_x, foot_y + (footer_h - bell_size) // 2,
+                 bell_size, bell_size),
+            is_visible_src=lambda: _alarm_armed(alarm_service),
+            color_role="fg_bright",
+        ))
+        _add_bt_transport_footer(self, bluetooth_service, mpd_service,
+                                 canvas_w, canvas_h, x_offset=alarm_w)
+
+        self.add(_rendering_indicator(self, canvas_w, canvas_h))
+
+    def on_tap(self, cx: float, cy: float) -> bool:
+        """Empty-area tap opens the launcher — matches IdleScene /
+        RadioScene so the gesture is the same on every home variant."""
+        self._compositor.set_overlay("launcher")
+        return True
+
+    def _apply_clock_layout(self) -> None:
+        if _scene_bg_is_globe(self):
+            self._clock.rect = self._clock_rect_globe
+            self._clock.font_factor = self._clock_factor_globe
+        else:
+            self._clock.rect = self._clock_rect_default
+            self._clock.font_factor = self._clock_factor_default
+
+    def render(self) -> Image.Image:
+        self._apply_clock_layout()
+        return super().render()
+
+
 class LauncherScene(Scene):
     """System launcher (swipe-up from bottom edge). 3×2 grid of app
     tiles (icon + label). Tile actions either swap overlays (RADIO,
@@ -786,14 +951,53 @@ class QuickPanelScene(Scene):
         return super().hit(cx, cy)
 
 
+def _settings_tile_grid(scene: "Scene", canvas_w: int, canvas_h: int,
+                        head_h: int, tiles: list,
+                        cols: int, rows: int) -> None:
+    """Lay tiles out in a cols×rows grid below the header. Used by every
+    settings page (top-level + group sub-pages) so paging visuals stay
+    identical regardless of how many tiles a page hosts.
+
+    `tiles` is a list of (label_src, on_press, icon_drawer). Cells past
+    len(tiles) are left empty — the grid still reserves their slots so
+    a 3-tile page lays out with the same per-tile size as a 6-tile one
+    and the user's eye doesn't have to recalibrate between pages."""
+    margin_x = int(canvas_w * 0.04)
+    margin_y = int(canvas_h * 0.03)
+    grid_top = head_h + margin_y
+    grid_w = canvas_w - 2 * margin_x
+    grid_h = canvas_h - grid_top - margin_y
+    cell_w = grid_w / cols
+    cell_h = grid_h / rows
+    pad = int(min(cell_w, cell_h) * 0.06)
+    for i, (label_src, action, icon_drawer) in enumerate(tiles):
+        col = i % cols
+        row = i // cols
+        tile_x = margin_x + int(col * cell_w) + pad
+        tile_y = grid_top + int(row * cell_h) + pad
+        tile_w = int(cell_w) - 2 * pad
+        tile_h = int(cell_h) - 2 * pad
+        scene.add(AppTile(
+            Rect(tile_x, tile_y, tile_w, tile_h),
+            label_src=label_src,
+            on_press=action,
+            icon_drawer=icon_drawer,
+        ))
+
+
 class SettingsScene(Scene):
-    """Overlay: top-level settings list. Currently routes to Wifi and
-    Theme; remaining rows are placeholders for future settings."""
+    """Overlay: top-level settings, presented as a 3×2 tile grid.
+
+    Six groups: WIFI · AUDIO · DISPLAY / LANGUAGE · DEMO · ABOUT.
+    AUDIO and DISPLAY are group tiles — tapping them opens a sub-page
+    (also a tile grid) with the leaf settings. The grouping keeps the
+    top page to six big, finger-friendly tiles instead of nine small
+    rows that were hard to read at bedside distance."""
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor):
         super().__init__(theme, canvas_w, canvas_h)
-        head_h = int(canvas_h * 0.14)
+        head_h = int(canvas_h * 0.12)
         self.add(_back_button(
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("launcher"),
@@ -806,44 +1010,101 @@ class SettingsScene(Scene):
             font_factor=0.55,
             color_role="fg_dim",
         ))
-        body_top = head_h + int(canvas_h * 0.04)
-        body_h = canvas_h - body_top - int(canvas_h * 0.04)
-        # (i18n-key, action, icon-name) — icons live in widgets.SETTINGS_ICONS
-        # so the row label and its glyph stay aligned in one place.
-        rows = [
-            ("settings.row.wifi",
-             lambda: compositor.set_overlay("wifi"), "wifi"),
-            ("settings.row.bluetooth",
-             lambda: compositor.set_overlay("bluetooth"), "bluetooth"),
-            ("settings.row.audio",
-             lambda: compositor.set_overlay("audio_output"), "speaker"),
-            ("settings.row.theme",
-             lambda: compositor.set_overlay("theme"), "palette"),
-            ("settings.row.language",
-             lambda: compositor.set_overlay("language"), "language"),
-            ("settings.row.background",
-             lambda: compositor.set_overlay("background"), "globe"),
-            ("settings.row.brightness",
-             lambda: compositor.set_overlay("brightness"), "brightness"),
-            ("settings.row.demo",
-             lambda: compositor.set_overlay("demo_intro"), "play"),
-            ("settings.row.about",
-             lambda: compositor.set_overlay("about"), "info"),
+        tiles = [
+            ((lambda: _t("settings.row.wifi")),
+             lambda: compositor.set_overlay("wifi"),
+             SETTINGS_ICONS.get("wifi")),
+            ((lambda: _t("settings.row.audio")),
+             lambda: compositor.set_overlay("audio_settings"),
+             SETTINGS_ICONS.get("speaker")),
+            ((lambda: _t("settings.row.display")),
+             lambda: compositor.set_overlay("display_settings"),
+             SETTINGS_ICONS.get("monitor")),
+            ((lambda: _t("settings.row.language")),
+             lambda: compositor.set_overlay("language"),
+             SETTINGS_ICONS.get("language")),
+            ((lambda: _t("settings.row.demo")),
+             lambda: compositor.set_overlay("demo_intro"),
+             SETTINGS_ICONS.get("play")),
+            ((lambda: _t("settings.row.about")),
+             lambda: compositor.set_overlay("about"),
+             SETTINGS_ICONS.get("info")),
         ]
-        # Reserve enough cell height for any future addition without
-        # wobbling the existing layout. Now 9 rows (added BLUETOOTH).
-        cell_h = body_h // max(len(rows), 9)
-        for i, (key, action, icon_name) in enumerate(rows):
-            self.add(IconRow(
-                Rect(int(canvas_w * 0.06), body_top + i * cell_h,
-                     int(canvas_w * 0.88), cell_h - 8),
-                label_src=(lambda k=key: _t(k)),
-                on_press=action,
-                icon_drawer=SETTINGS_ICONS.get(icon_name),
-                font_factor=0.55,
-                color_role="fg_bright",
-                icon_color_role="fg_accent",
-            ))
+        _settings_tile_grid(self, canvas_w, canvas_h, head_h,
+                            tiles, cols=3, rows=2)
+
+
+class AudioSettingsScene(Scene):
+    """Overlay: AUDIO group page. Two leaf tiles — OUTPUT (the speaker /
+    output picker) and BLUETOOTH (the radio-as-BT-speaker lifecycle).
+    Reached from Settings → AUDIO; back returns to Settings."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor):
+        super().__init__(theme, canvas_w, canvas_h)
+        head_h = int(canvas_h * 0.12)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
+            text_src=lambda: _t("scene.audio_settings.title"),
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+        tiles = [
+            ((lambda: _t("settings.row.output")),
+             lambda: compositor.set_overlay("audio_output"),
+             SETTINGS_ICONS.get("speaker")),
+            ((lambda: _t("settings.row.bluetooth")),
+             lambda: compositor.set_overlay("bluetooth"),
+             SETTINGS_ICONS.get("bluetooth")),
+        ]
+        # 2 tiles in a 2×1 grid — wide tiles read better than 2×2 with
+        # half the slots empty, and matches how phone settings render
+        # short groups (single row of large tiles).
+        _settings_tile_grid(self, canvas_w, canvas_h, head_h,
+                            tiles, cols=2, rows=1)
+
+
+class DisplaySettingsScene(Scene):
+    """Overlay: DISPLAY group page. Three leaf tiles — THEME, BACKGROUND,
+    BRIGHTNESS. Reached from Settings → DISPLAY; back returns to
+    Settings. Single row of three tiles keeps each tile tall and easy
+    to read."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor):
+        super().__init__(theme, canvas_w, canvas_h)
+        head_h = int(canvas_h * 0.12)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.66), head_h),
+            text_src=lambda: _t("scene.display_settings.title"),
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+        tiles = [
+            ((lambda: _t("settings.row.theme")),
+             lambda: compositor.set_overlay("theme"),
+             SETTINGS_ICONS.get("palette")),
+            ((lambda: _t("settings.row.background")),
+             lambda: compositor.set_overlay("background"),
+             SETTINGS_ICONS.get("globe")),
+            ((lambda: _t("settings.row.brightness")),
+             lambda: compositor.set_overlay("brightness"),
+             SETTINGS_ICONS.get("brightness")),
+        ]
+        _settings_tile_grid(self, canvas_w, canvas_h, head_h,
+                            tiles, cols=3, rows=1)
 
 
 class ThemeScene(Scene):
@@ -859,7 +1120,7 @@ class ThemeScene(Scene):
         self._head_h = head_h
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
+            on_press=lambda: compositor.set_overlay("display_settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
@@ -1377,7 +1638,7 @@ class BluetoothScene(Scene):
         self._head_h = head_h
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
+            on_press=lambda: compositor.set_overlay("audio_settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
@@ -2917,7 +3178,7 @@ class BrightnessScene(Scene):
         head_h = int(canvas_h * 0.14)
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
+            on_press=lambda: compositor.set_overlay("display_settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
@@ -3048,7 +3309,7 @@ class AudioOutputScene(Scene):
         self._head_h = head_h
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
+            on_press=lambda: compositor.set_overlay("audio_settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
@@ -3209,7 +3470,7 @@ class BackgroundScene(Scene):
         self._head_h = head_h
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
+            on_press=lambda: compositor.set_overlay("display_settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         # Title trimmed so the page indicator + chevron buttons fit on
