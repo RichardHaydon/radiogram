@@ -384,6 +384,16 @@ class TouchReader:
                         self._press_x = self._press_y = None
         return events
 
+    def discard_press(self) -> None:
+        """Drop the in-flight press tracking. Subsequent held_position()
+        calls return None until the next finger-down, and the eventual
+        BTN_TOUCH release skips emitting a tap/swipe (the classifier
+        early-outs when _press_x is None). Used by the wake-from-dim
+        path so a touch that only wakes the screen can't also act on
+        whatever button it happened to land on."""
+        self._press_x = None
+        self._press_y = None
+
     def held_position(self) -> tuple[int, int, float] | None:
         """Stable-hold introspection: returns (cx, cy, held_seconds)
         if the finger is currently down and hasn't drifted beyond
@@ -1128,6 +1138,15 @@ def main() -> int:
                 was_dim = (current_b < max(active_b, 2) * 0.5
                            or current_rgb[0] < 0.5)
                 if was_dim:
+                    # Discard the in-flight press so neither the hold
+                    # path (which would mark a button visually pressed
+                    # during the fade-up) nor the trailing tap on
+                    # release fires. Without this the user only got
+                    # wake-only behaviour for very fast taps — a press
+                    # held past ~half the fade let was_dim flip to
+                    # False, and the release reached the underlying
+                    # button.
+                    touch.discard_press()
                     continue
                 if ev.kind == "tap":
                     compositor.dispatch_tap(ev.cx, ev.cy)
