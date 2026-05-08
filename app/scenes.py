@@ -951,6 +951,17 @@ class QuickPanelScene(Scene):
         return super().hit(cx, cy)
 
 
+def _adapt_settings_icon(fn):
+    """Wrap a 3-arg SETTINGS_ICONS drawer (draw, rect, col) for AppTile's
+    4-arg signature (draw, rect, theme, col). The settings glyphs were
+    originally written for IconRow (3-arg) and don't need theme — this
+    keeps both callers happy without touching every icon definition.
+    Returns None unchanged so the AppTile no-icon branch still fires."""
+    if fn is None:
+        return None
+    return lambda draw, rect, theme, col, _f=fn: _f(draw, rect, col)
+
+
 def _settings_tile_grid(scene: "Scene", canvas_w: int, canvas_h: int,
                         head_h: int, tiles: list,
                         cols: int, rows: int) -> None:
@@ -1013,22 +1024,22 @@ class SettingsScene(Scene):
         tiles = [
             ((lambda: _t("settings.row.wifi")),
              lambda: compositor.set_overlay("wifi"),
-             SETTINGS_ICONS.get("wifi")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("wifi"))),
             ((lambda: _t("settings.row.audio")),
              lambda: compositor.set_overlay("audio_settings"),
-             SETTINGS_ICONS.get("speaker")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("speaker"))),
             ((lambda: _t("settings.row.display")),
              lambda: compositor.set_overlay("display_settings"),
-             SETTINGS_ICONS.get("monitor")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("monitor"))),
             ((lambda: _t("settings.row.language")),
              lambda: compositor.set_overlay("language"),
-             SETTINGS_ICONS.get("language")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("language"))),
             ((lambda: _t("settings.row.demo")),
              lambda: compositor.set_overlay("demo_intro"),
-             SETTINGS_ICONS.get("play")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("play"))),
             ((lambda: _t("settings.row.about")),
              lambda: compositor.set_overlay("about"),
-             SETTINGS_ICONS.get("info")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("info"))),
         ]
         _settings_tile_grid(self, canvas_w, canvas_h, head_h,
                             tiles, cols=3, rows=2)
@@ -1058,10 +1069,10 @@ class AudioSettingsScene(Scene):
         tiles = [
             ((lambda: _t("settings.row.output")),
              lambda: compositor.set_overlay("audio_output"),
-             SETTINGS_ICONS.get("speaker")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("speaker"))),
             ((lambda: _t("settings.row.bluetooth")),
              lambda: compositor.set_overlay("bluetooth"),
-             SETTINGS_ICONS.get("bluetooth")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("bluetooth"))),
         ]
         # 2 tiles in a 2×1 grid — wide tiles read better than 2×2 with
         # half the slots empty, and matches how phone settings render
@@ -1095,13 +1106,13 @@ class DisplaySettingsScene(Scene):
         tiles = [
             ((lambda: _t("settings.row.theme")),
              lambda: compositor.set_overlay("theme"),
-             SETTINGS_ICONS.get("palette")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("palette"))),
             ((lambda: _t("settings.row.background")),
              lambda: compositor.set_overlay("background"),
-             SETTINGS_ICONS.get("globe")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("globe"))),
             ((lambda: _t("settings.row.brightness")),
              lambda: compositor.set_overlay("brightness"),
-             SETTINGS_ICONS.get("brightness")),
+             _adapt_settings_icon(SETTINGS_ICONS.get("brightness"))),
         ]
         _settings_tile_grid(self, canvas_w, canvas_h, head_h,
                             tiles, cols=3, rows=1)
