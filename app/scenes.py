@@ -1347,25 +1347,399 @@ class WifiPasswordScene(Scene):
 
 
 class BluetoothScene(Scene):
-    """Overlay: discover, pair, and forget Bluetooth speakers.
+    """Overlay: make this radio act as a Bluetooth speaker (sink mode).
 
-    UX (single-device for v1):
-      • The currently-paired speaker (if any) is pinned at the top with
-        a FORGET button. "Currently paired" = the bluealsa MAC found in
-        /etc/mpd.conf, surfaced by BluetoothService.status.paired_mac.
-      • Below it, the list of discovered (and known-but-unpaired)
-        devices. Tap a row → pair, trust, connect, add MPD output,
-        switch MPD to it. The whole pipeline lives on the service
-        worker thread; the UI just shows busy/last_action/last_error.
-      • SCAN turns on bluez discovery for ~12 s.
+    Most users only ever do one Bluetooth operation: pair a phone so it
+    can stream music to the radio. That's the headline of this scene —
+    a state-machine UI that walks the user through the full lifecycle:
 
-    The scene auto-rescans on enter (matches WifiScene) so the user
-    sees a fresh list every time they open it. Devices are paginated in
-    MAX_ROWS-sized chunks via ▲/▼ buttons in the header right.
+        OFF              hero CTA  →  open the door for 5 minutes
+        DISCOVERABLE     show the controller name + countdown
+        CONNECTED        confirm the pair, prompt them to hit play
+        STREAMING        "now playing from <phone>" + disconnect/forget
+
+    Connecting *to* an external Bluetooth speaker (the inverse —
+    radio → speaker) is rare enough that it lives behind a small
+    "Connect external speaker ›" footer link, which navigates to a
+    dedicated BluetoothSpeakerScene with the scan/pair/forget UI.
+
+    All widgets are rebuilt per-frame from the current snapshot so the
+    layout transitions cleanly between the four states without bespoke
+    per-state widget caches.
     """
 
-    MAX_ROWS = 5      # one fewer than wifi to leave room for the
-                      # "currently paired" header row + status line.
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, bluetooth_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._bt = bluetooth_service
+        head_h = int(canvas_h * 0.12)
+        self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.20), 0,
+                 int(canvas_w * 0.60), head_h),
+            text_src=lambda: _t("scene.bluetooth.title"),
+            font_factor=0.45,
+            color_role="fg_dim",
+        ))
+        # Status line under the header carries transient feedback only
+        # ("Disconnected", "Forgotten", error text, etc.) — the primary
+        # state shows up in the body hero. Kept reserved here so the
+        # body geometry never shifts when an action message arrives.
+        stat_h = int(canvas_h * 0.08)
+        self._stat_h = stat_h
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.04), head_h,
+                 int(canvas_w * 0.92), stat_h),
+            text_src=self._status_line,
+            font_factor=0.40,
+            font_role="regular",
+            color_role="fg_subtle",
+        ))
+        self._dynamic: list[Widget] = []
+
+    # --- helpers -------------------------------------------------------
+
+    def _status_line(self) -> str:
+        s = self._bt.status
+        if not s.available:
+            return _t("bluetooth.unavailable")
+        if s.busy:
+            return _t("bluetooth.busy")
+        if s.last_error:
+            return _t("bluetooth.error", message=s.last_error)
+        if s.last_action:
+            return s.last_action
+        return ""
+
+    def _ui_state(self) -> str:
+        s = self._bt.status
+        if not s.available:
+            return "unavailable"
+        if s.streaming_from:
+            return "streaming"
+        if s.connected_phone:
+            return "connected"
+        if s.discoverable:
+            return "discoverable"
+        return "off"
+
+    @staticmethod
+    def _fmt_mmss(secs: int) -> str:
+        secs = max(0, int(secs))
+        mm, ss = divmod(secs, 60)
+        return f"{mm}:{ss:02d}"
+
+    def _on_open(self) -> None:
+        if self._bt.status.available:
+            self._bt.set_discoverable(True)
+
+    def _on_stop(self) -> None:
+        # Closes the discoverable window. Existing connections survive
+        # (matches the bluez behaviour); the user has to disconnect
+        # explicitly from the connected/streaming view.
+        self._bt.set_discoverable(False)
+
+    def _connected_mac(self) -> str:
+        """MAC of the phone we're showing in the connected/streaming
+        body. Walks the device list for the first connected paired
+        non-speaker — same logic the service uses to pick
+        connected_phone — so the FORGET / DISCONNECT buttons act on
+        the right device. Returns "" if nothing matches (rare race:
+        UI built off a snapshot the moment a phone disconnected)."""
+        s = self._bt.status
+        for d in s.devices:
+            if d.connected and d.paired and not d.is_audio \
+                    and d.mac != s.paired_mac:
+                return d.mac
+        return ""
+
+    def _on_disconnect(self) -> None:
+        mac = self._connected_mac()
+        if mac:
+            self._bt.disconnect(mac)
+
+    def _on_forget_phone(self) -> None:
+        mac = self._connected_mac()
+        if mac:
+            self._bt.forget(mac)
+
+    def _go_speaker(self) -> None:
+        self._compositor.set_overlay("bluetooth_speaker")
+
+    # --- body builder --------------------------------------------------
+
+    def _rebuild(self) -> None:
+        for w in self._dynamic:
+            try:
+                self.widgets.remove(w)
+            except ValueError:
+                pass
+        self._dynamic.clear()
+
+        body_top = self._head_h + self._stat_h + int(self.canvas_h * 0.02)
+        body_bot = self.canvas_h - int(self.canvas_h * 0.02)
+        margin_x = int(self.canvas_w * 0.04)
+        inner_w = self.canvas_w - 2 * margin_x
+
+        # Footer link is the same in every state — small, dim, lives at
+        # the bottom of the body. Reserves vertical space at the bottom
+        # so the body lays out above it.
+        link_h = int(self.canvas_h * 0.08)
+        link_w = int(self.canvas_w * 0.42)
+        link_y = body_bot - link_h
+        link_x = self.canvas_w // 2 - link_w // 2
+        link_btn = Button(
+            Rect(link_x, link_y, link_w, link_h),
+            label_src=lambda: _t("bluetooth.link.speaker"),
+            on_press=self._go_speaker,
+            font_factor=0.36,
+            color_role="fg_dim",
+            outline_width=1,
+        )
+        self.widgets.append(link_btn)
+        self._dynamic.append(link_btn)
+
+        avail_top = body_top
+        avail_bot = link_y - int(self.canvas_h * 0.02)
+
+        state = self._ui_state()
+        if state == "unavailable":
+            return  # status line already says it; nothing else to draw
+        if state == "off":
+            self._build_off(avail_top, avail_bot, margin_x, inner_w)
+        elif state == "discoverable":
+            self._build_discoverable(avail_top, avail_bot,
+                                     margin_x, inner_w)
+        elif state == "connected":
+            self._build_connected(avail_top, avail_bot,
+                                  margin_x, inner_w, streaming=False)
+        elif state == "streaming":
+            self._build_connected(avail_top, avail_bot,
+                                  margin_x, inner_w, streaming=True)
+
+    def _add(self, w: Widget) -> None:
+        self.widgets.append(w)
+        self._dynamic.append(w)
+
+    def _build_off(self, top: int, bot: int,
+                   margin_x: int, inner_w: int) -> None:
+        # Hero block + big primary button. Vertically centered in the
+        # available area so the pair-once-a-month action looks
+        # deliberate and easy to find at bedside distance.
+        avail_h = bot - top
+        title_h = int(avail_h * 0.18)
+        sub_h = int(avail_h * 0.22)
+        btn_h = int(avail_h * 0.22)
+        gap = int(avail_h * 0.04)
+        block_h = title_h + sub_h + gap + btn_h
+        y = top + (avail_h - block_h) // 2
+        self._add(TextWidget(
+            Rect(margin_x, y, inner_w, title_h),
+            text_src=lambda: _t("bluetooth.headline.idle"),
+            font_factor=0.70,
+            color_role="fg_bright",
+        ))
+        y += title_h
+        self._add(WrappedTextWidget(
+            Rect(margin_x, y, inner_w, sub_h),
+            text_src=lambda: _t("bluetooth.subline.idle"),
+            font_size=max(18, int(self.canvas_h * 0.038)),
+            color_role="fg_subtle",
+            line_spacing=1.20,
+        ))
+        y += sub_h + gap
+        big_w = int(inner_w * 0.78)
+        big_x = self.canvas_w // 2 - big_w // 2
+        self._add(Button(
+            Rect(big_x, y, big_w, btn_h),
+            label_src=lambda: _t("bluetooth.cta.open"),
+            on_press=self._on_open,
+            font_factor=0.46,
+            color_role="fg_accent",
+            outline_width=3,
+        ))
+
+    def _build_discoverable(self, top: int, bot: int,
+                            margin_x: int, inner_w: int) -> None:
+        # "Pair your phone with «name»" with the controller name as the
+        # visual centerpiece, then a big M:SS countdown, then STOP.
+        s = self._bt.status
+        avail_h = bot - top
+        prompt_h = int(avail_h * 0.13)
+        name_h = int(avail_h * 0.22)
+        sub_h = int(avail_h * 0.16)
+        count_h = int(avail_h * 0.18)
+        btn_h = int(avail_h * 0.16)
+        gap = int(avail_h * 0.025)
+        block_h = (prompt_h + name_h + sub_h + count_h + btn_h + 4 * gap)
+        y = top + max(0, (avail_h - block_h) // 2)
+        self._add(TextWidget(
+            Rect(margin_x, y, inner_w, prompt_h),
+            text_src=lambda: _t("bluetooth.headline.discoverable"),
+            font_factor=0.62,
+            color_role="fg_bright",
+        ))
+        y += prompt_h + gap
+        # Controller name in big accent type. Falls back to a neutral
+        # placeholder if the alias hasn't been read yet (first second
+        # after enabling sink mode); the next 1Hz poll fills it in.
+        self._add(TextWidget(
+            Rect(margin_x, y, inner_w, name_h),
+            text_src=lambda: (s.controller_name
+                              or _t("bluetooth.unknown_name")),
+            font_factor=0.78,
+            color_role="fg_accent",
+        ))
+        y += name_h + gap
+        self._add(WrappedTextWidget(
+            Rect(margin_x, y, inner_w, sub_h),
+            text_src=lambda: _t("bluetooth.subline.discoverable"),
+            font_size=max(16, int(self.canvas_h * 0.034)),
+            color_role="fg_subtle",
+            line_spacing=1.20,
+        ))
+        y += sub_h + gap
+        self._add(TextWidget(
+            Rect(margin_x, y, inner_w, count_h),
+            text_src=lambda: _t(
+                "bluetooth.countdown_remaining",
+                time=self._fmt_mmss(s.discoverable_seconds_left)),
+            font_factor=0.70,
+            color_role="fg_bright",
+        ))
+        y += count_h + gap
+        big_w = int(inner_w * 0.50)
+        big_x = self.canvas_w // 2 - big_w // 2
+        self._add(Button(
+            Rect(big_x, y, big_w, btn_h),
+            label_src=lambda: _t("bluetooth.button.stop"),
+            on_press=self._on_stop,
+            font_factor=0.50,
+            color_role="fg_dim",
+            outline_width=2,
+        ))
+
+    def _build_connected(self, top: int, bot: int,
+                         margin_x: int, inner_w: int, *,
+                         streaming: bool) -> None:
+        # Same skeleton for "connected" and "streaming"; differs only in
+        # the headline + subline strings and the headline colour role
+        # (accent for live audio, bright for paired-but-idle).
+        s = self._bt.status
+        phone = s.streaming_from or s.connected_phone or ""
+        avail_h = bot - top
+        head_h = int(avail_h * 0.16)
+        name_h = int(avail_h * 0.22)
+        sub_h = int(avail_h * 0.20)
+        btn_h = int(avail_h * 0.16)
+        gap = int(avail_h * 0.04)
+        # Optional small countdown row (only while still discoverable).
+        show_count = bool(s.discoverable and s.discoverable_seconds_left > 0)
+        count_h = int(avail_h * 0.08) if show_count else 0
+        block_h = head_h + name_h + sub_h + count_h + btn_h + 4 * gap
+        y = top + max(0, (avail_h - block_h) // 2)
+        if streaming:
+            head_key = "bluetooth.headline.streaming"
+            sub_key = "bluetooth.subline.streaming"
+            head_color = "fg_accent"
+        else:
+            head_key = "bluetooth.headline.connected"
+            sub_key = "bluetooth.subline.connected"
+            head_color = "fg_bright"
+        self._add(TextWidget(
+            Rect(margin_x, y, inner_w, head_h),
+            text_src=lambda: _t(head_key),
+            font_factor=0.62,
+            color_role=head_color,
+        ))
+        y += head_h + gap
+        self._add(TextWidget(
+            Rect(margin_x, y, inner_w, name_h),
+            text_src=lambda: phone,
+            font_factor=0.70,
+            color_role="fg_bright",
+        ))
+        y += name_h + gap
+        self._add(WrappedTextWidget(
+            Rect(margin_x, y, inner_w, sub_h),
+            text_src=lambda: _t(sub_key),
+            font_size=max(16, int(self.canvas_h * 0.036)),
+            color_role="fg_subtle",
+            line_spacing=1.20,
+        ))
+        y += sub_h + gap
+        if show_count:
+            self._add(TextWidget(
+                Rect(margin_x, y, inner_w, count_h),
+                text_src=lambda: _t(
+                    "bluetooth.countdown_remaining",
+                    time=self._fmt_mmss(s.discoverable_seconds_left)),
+                font_factor=0.70,
+                color_role="fg_dim",
+            ))
+            y += count_h + gap
+        # Two buttons side by side: DISCONNECT (keeps pairing) +
+        # FORGET PHONE (removes pairing entirely). Disconnect is the
+        # everyday action — placed first; FORGET reads as the
+        # "remove this phone forever" affordance, dimmed.
+        btn_gap = int(self.canvas_w * 0.02)
+        btn_w = (inner_w - btn_gap) // 2
+        self._add(Button(
+            Rect(margin_x, y, btn_w, btn_h),
+            label_src=lambda: _t("bluetooth.button.disconnect"),
+            on_press=self._on_disconnect,
+            font_factor=0.42,
+            color_role="fg_bright",
+            outline_width=2,
+        ))
+        self._add(Button(
+            Rect(margin_x + btn_w + btn_gap, y, btn_w, btn_h),
+            label_src=lambda: _t("bluetooth.button.forget_phone"),
+            on_press=self._on_forget_phone,
+            font_factor=0.42,
+            color_role="fg_dim",
+            outline_width=2,
+        ))
+
+    # --- scene API -----------------------------------------------------
+
+    def state_key(self) -> tuple:
+        s = self._bt.status
+        return (
+            s.available, s.busy, s.last_error, s.last_action,
+            s.discoverable, s.discoverable_seconds_left,
+            s.streaming_from, s.connected_phone, s.controller_name,
+            self._ui_state(),
+        )
+
+    def render(self) -> Image.Image:
+        self._rebuild()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._rebuild()
+        return super().hit(cx, cy)
+
+
+class BluetoothSpeakerScene(Scene):
+    """Overlay: pair an external Bluetooth speaker as the radio's
+    audio output. Less prominent than sink mode (most users won't open
+    this) — reached via the "Connect external speaker ›" link inside
+    BluetoothScene.
+
+    UX is the discover-and-pair list lifted from the previous combined
+    scene, with phones filtered out (anything paired and not flagged
+    is_audio is presumed to be a sink-mode phone and belongs over in
+    BluetoothScene's lifecycle UI). Currently-paired speaker pinned at
+    the top with FORGET; everything else paginated."""
+
+    MAX_ROWS = 6
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor, bluetooth_service):
@@ -1375,33 +1749,27 @@ class BluetoothScene(Scene):
         self._page = 0
         head_h = int(canvas_h * 0.12)
         self._head_h = head_h
+        # BACK returns to the BluetoothScene (the speaker scene is a
+        # leaf under it). HOME is a one-tap escape to idle as usual.
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
+            on_press=lambda: compositor.set_overlay("bluetooth"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
-        # "Bluetooth" + "Bluetooth" translations are 8–9 chars long —
-        # too wide for WifiScene's 0.22-width title rect at font 0.55,
-        # so we drop one notch to keep the label legible without
-        # ellipsis. SCAN button retains the same 0.20-width slot since
-        # NO's "SOK PA NYTT" needs every pixel of it.
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
-                 int(canvas_w * 0.22), head_h),
-            text_src=lambda: _t("scene.bluetooth.title"),
-            font_factor=0.45,
+                 int(canvas_w * 0.30), head_h),
+            text_src=lambda: _t("scene.bluetooth_speaker.title"),
+            font_factor=0.40,
             color_role="fg_dim",
         ))
         self.add(Button(
-            Rect(int(canvas_w * 0.44), int(head_h * 0.10),
+            Rect(int(canvas_w * 0.52), int(head_h * 0.10),
                  int(canvas_w * 0.20), int(head_h * 0.80)),
             label_src=lambda: _t("button.rescan"),
             on_press=lambda: self._bt.scan(),
             font_factor=0.42,
         ))
-        # Right-anchored page label + ▲/▼ — same affordance the wifi /
-        # station / background scenes use, so paging looks identical
-        # everywhere a list might overflow.
         btn_h = int(head_h * 0.80)
         btn_w = btn_h
         right_pad = int(canvas_w * 0.025)
@@ -1409,10 +1777,10 @@ class BluetoothScene(Scene):
         down_x = canvas_w - right_pad - btn_w
         up_x = down_x - btn_w - gap
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.66), 0,
-                 up_x - int(canvas_w * 0.66) - gap, head_h),
+            Rect(int(canvas_w * 0.74), 0,
+                 up_x - int(canvas_w * 0.74) - gap, head_h),
             text_src=self._page_label,
-            font_factor=0.40,
+            font_factor=0.38,
             color_role="fg_dim",
         ))
         self.add(IconButton(
@@ -1431,19 +1799,16 @@ class BluetoothScene(Scene):
             outline_width=2,
             icon_factor=0.65,
         ))
-        # Status line under the header.
-        stat_h = int(canvas_h * 0.10)
+        stat_h = int(canvas_h * 0.08)
         self._stat_h = stat_h
         self.add(TextWidget(
             Rect(int(canvas_w * 0.04), head_h,
                  int(canvas_w * 0.92), stat_h),
-            text_src=lambda: self._status_line(),
-            font_factor=0.42,
+            text_src=self._status_line,
+            font_factor=0.40,
             font_role="regular",
             color_role="fg_subtle",
         ))
-        # Dynamic widgets — rebuilt each render/hit so the displayed
-        # rows always reflect the latest snapshot.
         self._row_widgets: list[Widget] = []
 
     # --- status / paging ----------------------------------------------
@@ -1467,21 +1832,29 @@ class BluetoothScene(Scene):
             return _t("bluetooth.connected", name=name)
         return _t("bluetooth.idle")
 
-    def _other_devices(self) -> list:
-        """Devices to render in the scrollable list — everyone except
-        the currently-paired speaker, which is pinned in its own header
-        row above the list."""
+    def _list_devices(self) -> list:
+        """Devices to render in the scrollable list. Hides:
+          • the currently-paired speaker (pinned above the list)
+          • paired non-audio devices (phones from sink-mode pairings —
+            those belong in the BluetoothScene lifecycle UI, not here)."""
         s = self._bt.status
-        return [d for d in s.devices if d.mac != s.paired_mac]
+        out = []
+        for d in s.devices:
+            if d.mac == s.paired_mac:
+                continue
+            if d.paired and not d.is_audio:
+                continue
+            out.append(d)
+        return out
 
     def _max_page(self) -> int:
-        n = len(self._other_devices())
+        n = len(self._list_devices())
         if n <= self.MAX_ROWS:
             return 0
         return (n - 1) // self.MAX_ROWS
 
     def _page_label(self) -> str:
-        n = len(self._other_devices())
+        n = len(self._list_devices())
         if n <= self.MAX_ROWS:
             return ""
         total = self._max_page() + 1
@@ -1496,48 +1869,16 @@ class BluetoothScene(Scene):
         if self._page < self._max_page():
             self._page += 1
 
-    # --- actions -------------------------------------------------------
-
     def _on_pick(self, mac: str, name: str) -> None:
         s = self._bt.status
         if mac == s.paired_mac:
-            return  # already paired/connected; tapping is a no-op
+            return
         self._bt.pair(mac, name)
 
     def _on_forget(self, mac: str) -> None:
         self._bt.forget(mac)
 
-    def _on_toggle_sink(self) -> None:
-        # Tap to flip sink-mode on/off. The service handles the
-        # bluetoothctl pairable+discoverable dance; we just send the
-        # intent. No-op if the controller is unavailable to keep the
-        # button from spawning errors when bluez isn't running.
-        if not self._bt.status.available:
-            return
-        self._bt.set_discoverable(not self._bt.status.discoverable)
-
-    def _sink_label(self) -> str:
-        s = self._bt.status
-        if s.streaming_from:
-            return _t("bluetooth.sink.streaming", name=s.streaming_from)
-        if s.discoverable:
-            secs = max(0, s.discoverable_seconds_left)
-            mm, ss = divmod(secs, 60)
-            return _t("bluetooth.sink.on", time=f"{mm}:{ss:02d}")
-        return _t("bluetooth.sink.off")
-
-    def _sink_color_role(self) -> str:
-        s = self._bt.status
-        if s.streaming_from:
-            return "fg_accent"
-        if s.discoverable:
-            return "fg_bright"
-        return "fg_dim"
-
     def on_show(self) -> None:
-        # Auto-rescan when the user opens the BT scene. bluez caches the
-        # discovered set across runs but a fresh scan is what the user
-        # expects after putting a speaker into pairing mode.
         if self._bt.status.available and not self._bt.status.busy:
             self._bt.scan()
 
@@ -1556,31 +1897,8 @@ class BluetoothScene(Scene):
         body_bot = self.canvas_h - int(self.canvas_h * 0.02)
         margin_x = int(self.canvas_w * 0.04)
         inner_w = self.canvas_w - 2 * margin_x
-
-        # Sink-mode toggle row — pinned at the top of the body, always
-        # visible. Three states reflected in the label/colour:
-        #   • off:        "Receive from phone" (dim)
-        #   • on, idle:   "Receiving M:SS"      (bright, with countdown)
-        #   • streaming:  "Receiving from <X>"  (accent, no countdown)
-        # Tapping flips sink mode unless the adapter is unavailable.
         y = body_top
-        sink_row_h = int(self.canvas_h * 0.10)
-        sink_btn = Button(
-            Rect(margin_x, y, inner_w, sink_row_h),
-            label_src=self._sink_label,
-            on_press=self._on_toggle_sink,
-            font_factor=0.42,
-            color_role=self._sink_color_role(),
-            outline_width=(3 if (s.discoverable or s.streaming_from)
-                           else 1),
-        )
-        self.widgets.append(sink_btn)
-        self._row_widgets.append(sink_btn)
-        y += sink_row_h + int(self.canvas_h * 0.01)
 
-        # Pinned "currently paired speaker" row, with FORGET on the
-        # right. Renders even if the device hasn't been rediscovered
-        # this session — paired_mac is the source of truth.
         if s.paired_mac:
             paired_dev = next(
                 (d for d in s.devices if d.mac == s.paired_mac), None)
@@ -1612,8 +1930,7 @@ class BluetoothScene(Scene):
             self._row_widgets.append(forget_btn)
             y += row_h + int(self.canvas_h * 0.01)
 
-        # Discovered list — paginated.
-        others = self._other_devices()
+        others = self._list_devices()
         max_p = self._max_page()
         if self._page > max_p:
             self._page = max_p
@@ -1641,60 +1958,24 @@ class BluetoothScene(Scene):
                 tags.append(_t("bluetooth.tag.paired"))
             tag_str = ("   " + "  ".join(tags)) if tags else ""
             label = f"  {d.name}{tag_str}"
-            # Render every tappable row bright — `is_audio` is only set
-            # for paired devices (we don't run `bluetoothctl info` for
-            # the discovery list for cost reasons), so dimming the
-            # unknown-type rows would dim the very devices the user is
-            # trying to pair to. The ♪ tag still flags confirmed audio.
-            color_role = "fg_bright"
             row_y = y + i * cell_h
             row_h = cell_h - 8
-            # Paired devices get a FORGET button on the right (matches
-            # the pinned-speaker row treatment). Phones that paired via
-            # sink-mode end up here. Tapping the main label still
-            # initiates a fresh pair attempt for unpaired discoveries.
-            if d.paired:
-                forget_w = int(self.canvas_w * 0.18)
-                main_w = inner_w - forget_w - int(self.canvas_w * 0.02)
-                main_btn = Button(
-                    Rect(margin_x, row_y, main_w, row_h),
-                    label_src=label,
-                    on_press=lambda mac=d.mac, name=d.name:
-                        self._on_pick(mac, name),
-                    font_factor=0.32,
-                    color_role=color_role,
-                )
-                self.widgets.append(main_btn)
-                self._row_widgets.append(main_btn)
-                forget_btn = Button(
-                    Rect(margin_x + main_w + int(self.canvas_w * 0.02),
-                         row_y + int(row_h * 0.10),
-                         forget_w, int(row_h * 0.80)),
-                    label_src=lambda: _t("button.forget"),
-                    on_press=lambda mac=d.mac: self._on_forget(mac),
-                    font_factor=0.36,
-                    color_role="fg_dim",
-                )
-                self.widgets.append(forget_btn)
-                self._row_widgets.append(forget_btn)
-            else:
-                btn = Button(
-                    Rect(margin_x, row_y, inner_w, row_h),
-                    label_src=label,
-                    on_press=lambda mac=d.mac, name=d.name:
-                        self._on_pick(mac, name),
-                    font_factor=0.32,
-                    color_role=color_role,
-                )
-                self.widgets.append(btn)
-                self._row_widgets.append(btn)
+            btn = Button(
+                Rect(margin_x, row_y, inner_w, row_h),
+                label_src=label,
+                on_press=lambda mac=d.mac, name=d.name:
+                    self._on_pick(mac, name),
+                font_factor=0.32,
+                color_role="fg_bright",
+            )
+            self.widgets.append(btn)
+            self._row_widgets.append(btn)
 
     def state_key(self) -> tuple:
         s = self._bt.status
         return (
             s.available, s.busy, s.discovering, s.paired_mac,
             s.last_error, s.last_action,
-            s.discoverable, s.discoverable_seconds_left, s.streaming_from,
             tuple((d.mac, d.name, d.connected, d.paired, d.is_audio)
                   for d in s.devices),
             self._page,

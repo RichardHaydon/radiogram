@@ -90,15 +90,20 @@ class BluetoothStatus:
     paired_mac: str = ""
     # Sink-mode (phone → clockradio) state. `discoverable` reflects the
     # bluez controller flag; the seconds_left field is what the UI
-    # surfaces as a countdown next to the toggle. `streaming_from`
-    # holds the human-readable name of the phone currently streaming
-    # A2DP audio (empty when no stream is active). The UI uses this
-    # to swap the toggle row label between "Receive from phone" and
-    # "Receiving from <name>", and the service uses transitions on
-    # this field to pause/resume MPD.
+    # surfaces as a countdown. `streaming_from` holds the human-readable
+    # name of the phone currently streaming A2DP audio (empty when no
+    # stream is active). `connected_phone` is the name of any paired
+    # non-speaker device (typically a phone) currently connected to the
+    # radio — set even when no audio is flowing yet, so the UI can
+    # confirm a pair succeeded before the user hits play.
+    # `controller_name` is the bluez Alias the radio broadcasts (the
+    # name a phone sees when scanning); UI shows it to the user as the
+    # name to look for.
     discoverable: bool = False
     discoverable_seconds_left: int = 0
     streaming_from: str = ""
+    connected_phone: str = ""
+    controller_name: str = ""
 
 
 def _is_useful_name(name: str) -> bool:
@@ -192,10 +197,16 @@ class BluetoothService:
         # we can resume the user's radio after they hang up. The
         # `_streaming_addr` field holds the MAC of the phone currently
         # streaming, used to map the bluealsa PCM path back to a name
-        # for the UI.
+        # for the UI. `_discoverable_started_at` is the monotonic
+        # timestamp when we last enabled discoverable; the countdown
+        # shown to the user is computed from it (DiscoverableTimeout
+        # in `bluetoothctl show` is the *configured* timeout, not a
+        # live countdown — bluez ticks the flag off internally without
+        # exposing remaining time).
         self._sink_route: str = ""
         self._was_playing: bool = False
         self._streaming_addr: str = ""
+        self._discoverable_started_at: float = 0.0
 
     # --- public API ----------------------------------------------------
 
@@ -212,6 +223,13 @@ class BluetoothService:
 
     def forget(self, mac: str) -> None:
         self._cmd_q.put(("forget", mac))
+
+    def disconnect(self, mac: str) -> None:
+        """Drop the link without removing the pairing — the phone can
+        reconnect later without re-pairing. Used by the sink-mode UI's
+        DISCONNECT button when the user wants to stop the current
+        stream but keep the phone trusted for next time."""
+        self._cmd_q.put(("disconnect", mac))
 
     def set_discoverable(self, enabled: bool) -> None:
         """Enable/disable sink-mode (phone → clockradio).
@@ -312,8 +330,12 @@ class BluetoothService:
             # + bluetoothctl round-trips and let the slow poll catch
             # state drift. Pause/resume orchestration runs inside this
             # poll so it sees streaming transitions within ~1 s.
+            # Fast poll while: pairing window is open (countdown ticks),
+            # a phone is paired+connected (we want to catch the moment
+            # they hit play), or a stream is in flight.
             need_fast = (self._status.discoverable
-                         or self._status.streaming_from)
+                         or self._status.streaming_from
+                         or self._status.connected_phone)
             sink_due = now - last_sink_poll >= (
                 SINK_FAST_POLL_S if need_fast else SLOW_POLL_S)
             if sink_due:
@@ -368,6 +390,10 @@ class BluetoothService:
             mac = str(cmd[1]).upper()
             self._do_forget(mac)
             return
+        if kind == "disconnect":
+            mac = str(cmd[1]).upper()
+            self._do_disconnect(mac)
+            return
         if kind == "set_discoverable":
             self._do_set_discoverable(bool(cmd[1]))
             return
@@ -389,12 +415,18 @@ class BluetoothService:
                 self._btctl(["discoverable-timeout",
                              str(DISCOVERABLE_DURATION_S)], timeout=10)
                 self._btctl(["discoverable", "on"], timeout=10)
+                # Stamp the start time *after* the flag flips so the
+                # countdown reflects the user's expectation (bluez may
+                # take a moment to acknowledge the command). 1s drift
+                # is negligible relative to a 5-minute window.
+                self._discoverable_started_at = time.monotonic()
             else:
                 # Closing time. Existing connections stay alive — only
                 # new pair attempts get refused. This means a phone
                 # currently streaming continues uninterrupted.
                 self._btctl(["discoverable", "off"], timeout=10)
                 self._btctl(["pairable", "off"], timeout=10)
+                self._discoverable_started_at = 0.0
             self._refresh_sink_state()
         except subprocess.CalledProcessError as exc:
             msg = (exc.stderr or exc.stdout or "").strip()
@@ -405,24 +437,38 @@ class BluetoothService:
         fire MPD pause/resume on transitions. Cheap to call (one
         bluetoothctl + one bluealsa-cli round-trip), so the fast poll
         runs it every second when sink mode is engaged."""
-        # 1. Discoverable flag + remaining timer from bluetoothctl.
+        # 1. Discoverable flag + controller alias from bluetoothctl.
+        # The countdown is computed locally from the start timestamp:
+        # bluez exposes DiscoverableTimeout (the configured limit) but
+        # not "remaining" — and it stops being useful as soon as the
+        # flag flips off, which is exactly when the UI most needs to
+        # show 0:00 cleanly.
         discoverable = False
-        seconds_left = 0
+        controller_name = self._status.controller_name
         try:
             show = self._btctl(["show"], timeout=8)
             for line in show.splitlines():
                 s = line.strip()
                 if s.startswith("Discoverable:"):
                     discoverable = s.split(":", 1)[1].strip().lower() == "yes"
-                elif s.startswith("DiscoverableTimeout:"):
-                    # Format: "DiscoverableTimeout: 0x000000b4 (180)"
-                    m = re.search(r"\((\d+)\)", s)
-                    if m:
-                        seconds_left = int(m.group(1))
+                elif s.startswith("Alias:"):
+                    # `Alias: rpi3` — what the controller broadcasts.
+                    # Falls back to system hostname on a stock bluez.
+                    controller_name = s.split(":", 1)[1].strip()
         except subprocess.CalledProcessError:
             # Adapter may have gone away; leave previous state and let
             # the slow refresh re-establish availability.
             return
+
+        if discoverable and self._discoverable_started_at > 0.0:
+            elapsed = time.monotonic() - self._discoverable_started_at
+            seconds_left = max(0, int(DISCOVERABLE_DURATION_S - elapsed))
+        else:
+            seconds_left = 0
+            # Bluez auto-flips the flag off at the timeout — clear the
+            # stamp so a fresh "open" call later doesn't see a stale one.
+            if not discoverable:
+                self._discoverable_started_at = 0.0
 
         # 2. Active A2DP source PCMs from bluealsa-cli — each entry
         # like /org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsrc/source
@@ -465,11 +511,29 @@ class BluetoothService:
                 self._mpd_command("toggle")   # pause → play
             self._was_playing = False
 
+        # Identify a connected paired non-speaker device — typically
+        # a phone that pair-completed via sink mode. Surfaced in the
+        # UI as "Phone connected" so the user gets confirmation even
+        # before they hit play. We exclude the active BT speaker
+        # (paired_mac) so a paired audio output isn't mistaken for a
+        # source. Streaming address always wins over the device-list
+        # walk because A2DP source means there's a phone *right now*.
+        connected_phone = ""
+        if streaming_name:
+            connected_phone = streaming_name
+        else:
+            for d in self._status.devices:
+                if d.connected and d.paired and not d.is_audio \
+                        and d.mac != self._status.paired_mac:
+                    connected_phone = d.name
+                    break
+
         self._streaming_addr = streaming_addr
         self._set(discoverable=discoverable,
-                  discoverable_seconds_left=(seconds_left
-                                             if discoverable else 0),
-                  streaming_from=streaming_name)
+                  discoverable_seconds_left=seconds_left,
+                  streaming_from=streaming_name,
+                  connected_phone=connected_phone,
+                  controller_name=controller_name)
 
     def _sync_sink_route(self) -> None:
         """Compute the desired ALSA device for bluealsa-aplay from the
@@ -588,6 +652,30 @@ class BluetoothService:
             self._set(last_error=str(exc))
         finally:
             self._refresh()
+            self._set(busy=False)
+
+    def _do_disconnect(self, mac: str) -> None:
+        """Drop the link but leave pairing intact. Failures are surfaced
+        to the user; idempotent (a 'not connected' error is treated as
+        success because the desired end state is reached either way)."""
+        self._set(busy=True, last_error="", last_action="")
+        try:
+            try:
+                self._btctl(["disconnect", mac], timeout=10)
+            except subprocess.CalledProcessError as exc:
+                msg = (exc.stderr or exc.stdout or "").lower()
+                if "not connected" not in msg \
+                        and "doesnotexist" not in msg:
+                    raise
+            self._set(last_action="Disconnected")
+        except subprocess.CalledProcessError as exc:
+            err = (exc.stderr or exc.stdout or "disconnect failed").strip()
+            self._set(last_error=err)
+        except Exception as exc:
+            self._set(last_error=str(exc))
+        finally:
+            self._refresh()
+            self._refresh_sink_state()
             self._set(busy=False)
 
     def _do_forget(self, mac: str) -> None:

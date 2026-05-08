@@ -32,6 +32,7 @@ EN: dict[str, str] = {
     "scene.wifi.title": "Wifi",
     "scene.wifi_password.title": "Wifi password — {ssid}",
     "scene.bluetooth.title": "Bluetooth",
+    "scene.bluetooth_speaker.title": "External speaker",
     "scene.verse.title": "Verse of the Day",
     "scene.weather.title": "Weather",
     "scene.station_list.title": "Stations",
@@ -193,6 +194,28 @@ EN: dict[str, str] = {
     "bluetooth.sink.off": "RECEIVE FROM PHONE",
     "bluetooth.sink.on": "RECEIVE FROM PHONE — ON · {time}",
     "bluetooth.sink.streaming": "RECEIVING FROM {name}",
+    # New sink-mode lifecycle UI (BluetoothScene)
+    "bluetooth.headline.idle": "Stream from your phone",
+    "bluetooth.subline.idle": (
+        "Make this radio appear as a Bluetooth speaker so any phone "
+        "or tablet can stream music to it."),
+    "bluetooth.cta.open": "OPEN FOR PAIRING — 5 MIN",
+    "bluetooth.headline.discoverable": "On your phone, pair with",
+    "bluetooth.subline.discoverable": (
+        "Open Bluetooth settings on your phone, find the name above, "
+        "and tap it to pair."),
+    "bluetooth.countdown_remaining": "{time} remaining",
+    "bluetooth.button.stop": "STOP PAIRING",
+    "bluetooth.headline.connected": "Phone connected",
+    "bluetooth.subline.connected": (
+        "Press play on your phone — audio will come out of this radio."),
+    "bluetooth.headline.streaming": "Now playing from",
+    "bluetooth.subline.streaming": (
+        "Audio is streaming through this radio."),
+    "bluetooth.button.disconnect": "DISCONNECT",
+    "bluetooth.button.forget_phone": "FORGET PHONE",
+    "bluetooth.link.speaker": "Connect external speaker  ›",
+    "bluetooth.unknown_name": "(this radio)",
 
     # Verse / weather loading
     "verse.loading": "Loading…",
@@ -321,6 +344,7 @@ ES: dict[str, str] = {
     "scene.wifi.title": "Wifi",
     "scene.wifi_password.title": "Contrasena wifi — {ssid}",
     "scene.bluetooth.title": "Bluetooth",
+    "scene.bluetooth_speaker.title": "Altavoz externo",
     "scene.verse.title": "Versiculo del dia",
     "scene.weather.title": "Tiempo",
     "scene.station_list.title": "Emisoras",
@@ -480,6 +504,27 @@ ES: dict[str, str] = {
     "bluetooth.sink.off": "RECIBIR DEL TELEFONO",
     "bluetooth.sink.on": "RECIBIR DEL TELEFONO — ON · {time}",
     "bluetooth.sink.streaming": "RECIBIENDO DE {name}",
+    "bluetooth.headline.idle": "Reproduce desde tu telefono",
+    "bluetooth.subline.idle": (
+        "Haz que esta radio aparezca como altavoz Bluetooth "
+        "para que tu telefono o tableta le envie musica."),
+    "bluetooth.cta.open": "ABRIR EMPAREJAMIENTO — 5 MIN",
+    "bluetooth.headline.discoverable": "En tu telefono, empareja con",
+    "bluetooth.subline.discoverable": (
+        "Abre los ajustes Bluetooth de tu telefono, busca el nombre "
+        "de arriba y tocalo para emparejar."),
+    "bluetooth.countdown_remaining": "{time} restantes",
+    "bluetooth.button.stop": "DETENER",
+    "bluetooth.headline.connected": "Telefono conectado",
+    "bluetooth.subline.connected": (
+        "Pulsa play en tu telefono — el audio saldra por esta radio."),
+    "bluetooth.headline.streaming": "Reproduciendo de",
+    "bluetooth.subline.streaming": (
+        "El audio se esta reproduciendo por esta radio."),
+    "bluetooth.button.disconnect": "DESCONECTAR",
+    "bluetooth.button.forget_phone": "OLVIDAR TELEFONO",
+    "bluetooth.link.speaker": "Conectar altavoz externo  ›",
+    "bluetooth.unknown_name": "(esta radio)",
 
     # Loading
     "verse.loading": "Cargando…",
@@ -604,6 +649,7 @@ NO: dict[str, str] = {
     "scene.wifi.title": "Wifi",
     "scene.wifi_password.title": "Wifi-passord — {ssid}",
     "scene.bluetooth.title": "Bluetooth",
+    "scene.bluetooth_speaker.title": "Ekstern hoyttaler",
     "scene.verse.title": "Dagens vers",
     "scene.weather.title": "Vaer",
     "scene.station_list.title": "Stasjoner",
@@ -763,6 +809,27 @@ NO: dict[str, str] = {
     "bluetooth.sink.off": "MOTTA FRA TELEFON",
     "bluetooth.sink.on": "MOTTA FRA TELEFON — PA · {time}",
     "bluetooth.sink.streaming": "MOTTAR FRA {name}",
+    "bluetooth.headline.idle": "Stream fra telefonen din",
+    "bluetooth.subline.idle": (
+        "Gjor at denne radioen vises som en Bluetooth-hoyttaler "
+        "slik at en telefon eller nettbrett kan streame musikk til den."),
+    "bluetooth.cta.open": "APNE FOR PARING — 5 MIN",
+    "bluetooth.headline.discoverable": "Pa telefonen, par med",
+    "bluetooth.subline.discoverable": (
+        "Apne Bluetooth-innstillingene pa telefonen, finn navnet over, "
+        "og trykk for a pare."),
+    "bluetooth.countdown_remaining": "{time} igjen",
+    "bluetooth.button.stop": "STOPP PARING",
+    "bluetooth.headline.connected": "Telefonen er tilkoblet",
+    "bluetooth.subline.connected": (
+        "Trykk play pa telefonen — lyden kommer ut av denne radioen."),
+    "bluetooth.headline.streaming": "Spiller na fra",
+    "bluetooth.subline.streaming": (
+        "Lyden streames gjennom denne radioen."),
+    "bluetooth.button.disconnect": "KOBLE FRA",
+    "bluetooth.button.forget_phone": "GLEM TELEFON",
+    "bluetooth.link.speaker": "Koble til ekstern hoyttaler  ›",
+    "bluetooth.unknown_name": "(denne radioen)",
 
     # Loading
     "verse.loading": "Laster…",

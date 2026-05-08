@@ -59,11 +59,12 @@ from demo_service import CaptionOverlay, DemoService
 import scenes as _scenes_mod
 from scenes import (
     AboutScene, AlarmEditScene, AlarmFiringScene, AlarmListScene,
-    AudioOutputScene, BackgroundScene, BluetoothScene, BrightnessScene,
-    DemoIntroScene, DemoSplashScene, IdleScene, LanguageScene,
-    LauncherScene, MapCenterScene, QuickPanelScene, RadioScene,
-    SettingsScene, StationListScene, ThemeScene, VerseScene,
-    WeatherScene, WifiPasswordScene, WifiScene,
+    AudioOutputScene, BackgroundScene, BluetoothScene,
+    BluetoothSpeakerScene, BrightnessScene, DemoIntroScene,
+    DemoSplashScene, IdleScene, LanguageScene, LauncherScene,
+    MapCenterScene, QuickPanelScene, RadioScene, SettingsScene,
+    StationListScene, ThemeScene, VerseScene, WeatherScene,
+    WifiPasswordScene, WifiScene,
 )
 
 
@@ -996,6 +997,10 @@ def main() -> int:
         compositor=compositor, wifi_service=wifi,
     )
     scenes["bluetooth"] = BluetoothScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, bluetooth_service=bluetooth,
+    )
+    scenes["bluetooth_speaker"] = BluetoothSpeakerScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, bluetooth_service=bluetooth,
     )
