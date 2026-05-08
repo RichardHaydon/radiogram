@@ -1507,6 +1507,33 @@ class BluetoothScene(Scene):
     def _on_forget(self, mac: str) -> None:
         self._bt.forget(mac)
 
+    def _on_toggle_sink(self) -> None:
+        # Tap to flip sink-mode on/off. The service handles the
+        # bluetoothctl pairable+discoverable dance; we just send the
+        # intent. No-op if the controller is unavailable to keep the
+        # button from spawning errors when bluez isn't running.
+        if not self._bt.status.available:
+            return
+        self._bt.set_discoverable(not self._bt.status.discoverable)
+
+    def _sink_label(self) -> str:
+        s = self._bt.status
+        if s.streaming_from:
+            return _t("bluetooth.sink.streaming", name=s.streaming_from)
+        if s.discoverable:
+            secs = max(0, s.discoverable_seconds_left)
+            mm, ss = divmod(secs, 60)
+            return _t("bluetooth.sink.on", time=f"{mm}:{ss:02d}")
+        return _t("bluetooth.sink.off")
+
+    def _sink_color_role(self) -> str:
+        s = self._bt.status
+        if s.streaming_from:
+            return "fg_accent"
+        if s.discoverable:
+            return "fg_bright"
+        return "fg_dim"
+
     def on_show(self) -> None:
         # Auto-rescan when the user opens the BT scene. bluez caches the
         # discovered set across runs but a fresh scan is what the user
@@ -1530,10 +1557,30 @@ class BluetoothScene(Scene):
         margin_x = int(self.canvas_w * 0.04)
         inner_w = self.canvas_w - 2 * margin_x
 
-        # Pinned "currently paired" row at the top of the body, with
-        # FORGET on the right. Renders even if the device hasn't been
-        # rediscovered this session — paired_mac is the source of truth.
+        # Sink-mode toggle row — pinned at the top of the body, always
+        # visible. Three states reflected in the label/colour:
+        #   • off:        "Receive from phone" (dim)
+        #   • on, idle:   "Receiving M:SS"      (bright, with countdown)
+        #   • streaming:  "Receiving from <X>"  (accent, no countdown)
+        # Tapping flips sink mode unless the adapter is unavailable.
         y = body_top
+        sink_row_h = int(self.canvas_h * 0.10)
+        sink_btn = Button(
+            Rect(margin_x, y, inner_w, sink_row_h),
+            label_src=self._sink_label,
+            on_press=self._on_toggle_sink,
+            font_factor=0.42,
+            color_role=self._sink_color_role(),
+            outline_width=(3 if (s.discoverable or s.streaming_from)
+                           else 1),
+        )
+        self.widgets.append(sink_btn)
+        self._row_widgets.append(sink_btn)
+        y += sink_row_h + int(self.canvas_h * 0.01)
+
+        # Pinned "currently paired speaker" row, with FORGET on the
+        # right. Renders even if the device hasn't been rediscovered
+        # this session — paired_mac is the source of truth.
         if s.paired_mac:
             paired_dev = next(
                 (d for d in s.devices if d.mac == s.paired_mac), None)
@@ -1600,23 +1647,54 @@ class BluetoothScene(Scene):
             # unknown-type rows would dim the very devices the user is
             # trying to pair to. The ♪ tag still flags confirmed audio.
             color_role = "fg_bright"
-            btn = Button(
-                Rect(margin_x, y + i * cell_h,
-                     inner_w, cell_h - 8),
-                label_src=label,
-                on_press=lambda mac=d.mac, name=d.name:
-                    self._on_pick(mac, name),
-                font_factor=0.32,
-                color_role=color_role,
-            )
-            self.widgets.append(btn)
-            self._row_widgets.append(btn)
+            row_y = y + i * cell_h
+            row_h = cell_h - 8
+            # Paired devices get a FORGET button on the right (matches
+            # the pinned-speaker row treatment). Phones that paired via
+            # sink-mode end up here. Tapping the main label still
+            # initiates a fresh pair attempt for unpaired discoveries.
+            if d.paired:
+                forget_w = int(self.canvas_w * 0.18)
+                main_w = inner_w - forget_w - int(self.canvas_w * 0.02)
+                main_btn = Button(
+                    Rect(margin_x, row_y, main_w, row_h),
+                    label_src=label,
+                    on_press=lambda mac=d.mac, name=d.name:
+                        self._on_pick(mac, name),
+                    font_factor=0.32,
+                    color_role=color_role,
+                )
+                self.widgets.append(main_btn)
+                self._row_widgets.append(main_btn)
+                forget_btn = Button(
+                    Rect(margin_x + main_w + int(self.canvas_w * 0.02),
+                         row_y + int(row_h * 0.10),
+                         forget_w, int(row_h * 0.80)),
+                    label_src=lambda: _t("button.forget"),
+                    on_press=lambda mac=d.mac: self._on_forget(mac),
+                    font_factor=0.36,
+                    color_role="fg_dim",
+                )
+                self.widgets.append(forget_btn)
+                self._row_widgets.append(forget_btn)
+            else:
+                btn = Button(
+                    Rect(margin_x, row_y, inner_w, row_h),
+                    label_src=label,
+                    on_press=lambda mac=d.mac, name=d.name:
+                        self._on_pick(mac, name),
+                    font_factor=0.32,
+                    color_role=color_role,
+                )
+                self.widgets.append(btn)
+                self._row_widgets.append(btn)
 
     def state_key(self) -> tuple:
         s = self._bt.status
         return (
             s.available, s.busy, s.discovering, s.paired_mac,
             s.last_error, s.last_action,
+            s.discoverable, s.discoverable_seconds_left, s.streaming_from,
             tuple((d.mac, d.name, d.connected, d.paired, d.is_audio)
                   for d in s.devices),
             self._page,

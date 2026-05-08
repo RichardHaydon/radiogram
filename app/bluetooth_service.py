@@ -1,9 +1,10 @@
-"""Bluetooth speaker discovery + pairing via bluetoothctl.
+"""Bluetooth speaker discovery + pairing via bluetoothctl, plus a
+phone-streams-to-clockradio sink mode.
 
 Mirrors WifiService's shape: a daemon thread, a lock-protected snapshot
 (BluetoothStatus), and a command queue. Mutating commands (scan, pair,
-forget) flow through the queue so a 10–15 s pair operation never blocks
-the UI thread.
+forget, set_discoverable) flow through the queue so a 10–15 s pair
+operation never blocks the UI thread.
 
 bluetoothctl is invoked one-shot via `--timeout` so we never hold an
 interactive session. The default bluez "Just Works" agent (NoInputNoOutput)
@@ -11,12 +12,21 @@ handles pairing for the modern A2DP speakers users actually own; PIN-prompt
 devices fail with a clear error and we revisit with a custom D-Bus agent
 later if needed.
 
-Pairing successfully also wires the speaker into the audio pipeline:
-the privileged helper `/usr/local/sbin/clockradio-bt-output add MAC NAME`
-appends a `bluealsa:DEV=MAC,PROFILE=a2dp` audio_output block to
-/etc/mpd.conf and restarts mpd. The caller (BluetoothScene) is then free
-to ask MPDService to switch to the new output id — the speaker becomes
-the active sink without leaving the BT scene.
+Outbound (clock → speaker): on a successful pair the privileged helper
+`/usr/local/sbin/clockradio-bt-output add MAC NAME` appends a
+`bluealsa:DEV=MAC,PROFILE=a2dp` audio_output block to /etc/mpd.conf and
+restarts mpd. The service then asks MPDService to switch to the new
+output id — the speaker becomes the active sink without leaving the
+BT scene.
+
+Inbound (phone → clock): when the user enables Settings → BLUETOOTH
+→ "Receive from phone", the controller is made `pairable +
+discoverable` for ~5 minutes. A persistent `bt-agent NoInputNoOutput`
+systemd service auto-accepts the pair, and `bluealsa-aplay` (routed
+to the same ALSA device the radio uses) plays the incoming A2DP
+stream out the clock's wired/USB speaker. While a phone is actively
+streaming we pause MPD; on disconnect, MPD resumes if it was playing
+before — the same behaviour as a car stereo.
 """
 from __future__ import annotations
 
@@ -31,10 +41,17 @@ from dataclasses import dataclass, field, replace
 
 CMD_WAIT_S = 0.2
 SLOW_POLL_S = 30.0
+# Stream/discoverable status changes need to feel responsive in the UI
+# (countdown ticks every second, MPD pause must follow within ~1 s of
+# the phone hitting play). The sink-mode poll runs at this cadence
+# whenever the radio is *currently* discoverable or streaming, falling
+# back to SLOW_POLL_S when neither flag is set.
+SINK_FAST_POLL_S = 1.0
 BTCTL_TIMEOUT_S = 25
 SCAN_DURATION_S = 12       # bluetoothctl --timeout for scan on
 PAIR_TIMEOUT_S = 25        # pair + trust + connect each get this budget
 HELPER_TIMEOUT_S = 20
+DISCOVERABLE_DURATION_S = 300   # how long a "Receive from phone" tap stays open
 
 # Names we hide in the "discovered" list. bluez fills the name field
 # with the MAC (in either colon `AA:BB:..` or hyphen `AA-BB-..` form)
@@ -71,6 +88,17 @@ class BluetoothStatus:
     # MAC of the currently-active BT speaker, derived from /etc/mpd.conf.
     # Empty if no BT output is configured.
     paired_mac: str = ""
+    # Sink-mode (phone → clockradio) state. `discoverable` reflects the
+    # bluez controller flag; the seconds_left field is what the UI
+    # surfaces as a countdown next to the toggle. `streaming_from`
+    # holds the human-readable name of the phone currently streaming
+    # A2DP audio (empty when no stream is active). The UI uses this
+    # to swap the toggle row label between "Receive from phone" and
+    # "Receiving from <name>", and the service uses transitions on
+    # this field to pause/resume MPD.
+    discoverable: bool = False
+    discoverable_seconds_left: int = 0
+    streaming_from: str = ""
 
 
 def _is_useful_name(name: str) -> bool:
@@ -143,7 +171,10 @@ class BluetoothService:
                  mpd_service=None):
         # mpd_service is optional — if provided, a successful pair will
         # enqueue ("set_output", id) on it once the new output appears
-        # so the speaker becomes the active sink immediately.
+        # so the speaker becomes the active sink immediately. The same
+        # handle drives the sink-mode pause/resume orchestration: when
+        # a phone starts streaming we send `pause`; when the stream
+        # ends we send `play` if MPD was playing before the interrupt.
         self._helper_path = helper_path
         self._mpd_conf_path = mpd_conf_path
         self._mpd = mpd_service
@@ -153,6 +184,18 @@ class BluetoothService:
         self._stop_evt = threading.Event()
         self._cmd_q: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
+        # Sink-mode internal state. `_sink_route` tracks the ALSA
+        # device we last asked bluealsa-aplay to play to, so we only
+        # invoke the helper (which restarts the service, dropping any
+        # active phone stream) when it actually changes. `_was_playing`
+        # captures MPD's state at the moment a phone stream starts so
+        # we can resume the user's radio after they hang up. The
+        # `_streaming_addr` field holds the MAC of the phone currently
+        # streaming, used to map the bluealsa PCM path back to a name
+        # for the UI.
+        self._sink_route: str = ""
+        self._was_playing: bool = False
+        self._streaming_addr: str = ""
 
     # --- public API ----------------------------------------------------
 
@@ -169,6 +212,14 @@ class BluetoothService:
 
     def forget(self, mac: str) -> None:
         self._cmd_q.put(("forget", mac))
+
+    def set_discoverable(self, enabled: bool) -> None:
+        """Enable/disable sink-mode (phone → clockradio).
+
+        Enabled: makes the controller pairable + discoverable for
+        DISCOVERABLE_DURATION_S seconds (bluez auto-disables on
+        timeout). Disabled: turns both flags off immediately. Idempotent."""
+        self._cmd_q.put(("set_discoverable", bool(enabled)))
 
     def refresh_now(self) -> None:
         self._cmd_q.put(("refresh",))
@@ -230,7 +281,14 @@ class BluetoothService:
             print(f"bt initial refresh: {exc}",
                   file=sys.stderr, flush=True)
 
+        # First-pass sink route — point bluealsa-aplay at whatever ALSA
+        # device MPD is currently using so a phone-pair can stream the
+        # moment the user enables sink mode without an extra reload.
+        # Best-effort: failures here are logged but don't block startup.
+        self._sync_sink_route()
+
         last_poll = time.monotonic()
+        last_sink_poll = 0.0
         while not self._stop_evt.is_set():
             try:
                 cmd = self._cmd_q.get(timeout=CMD_WAIT_S)
@@ -245,11 +303,30 @@ class BluetoothService:
                     self._set(busy=False, discovering=False,
                               last_error=str(exc))
                 last_poll = time.monotonic()
+                last_sink_poll = last_poll
                 continue
             now = time.monotonic()
+            # Fast sink poll runs only when there's actually something
+            # to track (we're discoverable, or a phone is currently
+            # streaming). Outside that window we save the bluealsa-cli
+            # + bluetoothctl round-trips and let the slow poll catch
+            # state drift. Pause/resume orchestration runs inside this
+            # poll so it sees streaming transitions within ~1 s.
+            need_fast = (self._status.discoverable
+                         or self._status.streaming_from)
+            sink_due = now - last_sink_poll >= (
+                SINK_FAST_POLL_S if need_fast else SLOW_POLL_S)
+            if sink_due:
+                try:
+                    self._refresh_sink_state()
+                except Exception as exc:
+                    print(f"bt sink poll: {exc}",
+                          file=sys.stderr, flush=True)
+                last_sink_poll = now
             if now - last_poll >= SLOW_POLL_S:
                 try:
                     self._refresh()
+                    self._sync_sink_route()
                 except Exception as exc:
                     print(f"bt poll: {exc}",
                           file=sys.stderr, flush=True)
@@ -291,6 +368,179 @@ class BluetoothService:
             mac = str(cmd[1]).upper()
             self._do_forget(mac)
             return
+        if kind == "set_discoverable":
+            self._do_set_discoverable(bool(cmd[1]))
+            return
+
+    # --- sink mode (phone → clockradio) --------------------------------
+
+    def _do_set_discoverable(self, enabled: bool) -> None:
+        """Toggle the controller's pairable+discoverable flags."""
+        self._set(last_error="", last_action="")
+        try:
+            if enabled:
+                # Ensure the route is current before opening the door —
+                # if MPD switched outputs since the last refresh, the
+                # phone audio would otherwise go to the old device.
+                self._sync_sink_route()
+                # Order matters: pairable first so an incoming pair
+                # request during the discoverable window can complete.
+                self._btctl(["pairable", "on"], timeout=10)
+                self._btctl(["discoverable-timeout",
+                             str(DISCOVERABLE_DURATION_S)], timeout=10)
+                self._btctl(["discoverable", "on"], timeout=10)
+            else:
+                # Closing time. Existing connections stay alive — only
+                # new pair attempts get refused. This means a phone
+                # currently streaming continues uninterrupted.
+                self._btctl(["discoverable", "off"], timeout=10)
+                self._btctl(["pairable", "off"], timeout=10)
+            self._refresh_sink_state()
+        except subprocess.CalledProcessError as exc:
+            msg = (exc.stderr or exc.stdout or "").strip()
+            self._set(last_error=msg or "discoverable toggle failed")
+
+    def _refresh_sink_state(self) -> None:
+        """Re-read discoverable + streaming state from the system and
+        fire MPD pause/resume on transitions. Cheap to call (one
+        bluetoothctl + one bluealsa-cli round-trip), so the fast poll
+        runs it every second when sink mode is engaged."""
+        # 1. Discoverable flag + remaining timer from bluetoothctl.
+        discoverable = False
+        seconds_left = 0
+        try:
+            show = self._btctl(["show"], timeout=8)
+            for line in show.splitlines():
+                s = line.strip()
+                if s.startswith("Discoverable:"):
+                    discoverable = s.split(":", 1)[1].strip().lower() == "yes"
+                elif s.startswith("DiscoverableTimeout:"):
+                    # Format: "DiscoverableTimeout: 0x000000b4 (180)"
+                    m = re.search(r"\((\d+)\)", s)
+                    if m:
+                        seconds_left = int(m.group(1))
+        except subprocess.CalledProcessError:
+            # Adapter may have gone away; leave previous state and let
+            # the slow refresh re-establish availability.
+            return
+
+        # 2. Active A2DP source PCMs from bluealsa-cli — each entry
+        # like /org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsrc/source
+        # represents a phone currently piping audio at us. We only
+        # care that *one* is present and which device it belongs to.
+        streaming_addr = ""
+        try:
+            pcms = subprocess.run(
+                ["bluealsa-cli", "list-pcms"],
+                capture_output=True, text=True,
+                timeout=5, check=False).stdout
+            for path in pcms.splitlines():
+                if "/a2dpsrc/" in path or "a2dp-source" in path.lower():
+                    m = re.search(r"dev_([0-9A-F_]{17})", path)
+                    if m:
+                        streaming_addr = m.group(1).replace("_", ":")
+                        break
+        except (subprocess.SubprocessError, FileNotFoundError):
+            streaming_addr = ""
+
+        streaming_name = ""
+        if streaming_addr:
+            streaming_name = self._device_name(streaming_addr) \
+                or streaming_addr
+
+        # 3. Pause/resume orchestration. We only mutate MPD on edge
+        # transitions to avoid spamming toggle every poll. The flag
+        # captures whether MPD was *playing* (not paused, not stopped)
+        # so we don't accidentally start playing on a phone disconnect
+        # if the user had explicitly stopped the radio earlier.
+        # MPDService only exposes a single `toggle` string command for
+        # play/pause; we use it in both directions, gated by was_playing.
+        prev_streaming = self._status.streaming_from
+        if streaming_name and not prev_streaming:
+            self._was_playing = self._mpd_is_playing()
+            if self._was_playing:
+                self._mpd_command("toggle")   # play → pause
+        elif prev_streaming and not streaming_name:
+            if self._was_playing:
+                self._mpd_command("toggle")   # pause → play
+            self._was_playing = False
+
+        self._streaming_addr = streaming_addr
+        self._set(discoverable=discoverable,
+                  discoverable_seconds_left=(seconds_left
+                                             if discoverable else 0),
+                  streaming_from=streaming_name)
+
+    def _sync_sink_route(self) -> None:
+        """Compute the desired ALSA device for bluealsa-aplay from the
+        currently-active MPD output and ask the helper to apply it.
+        Idempotent: skips the (expensive — restarts a service) helper
+        call when the route is already up to date."""
+        device = self._desired_sink_device()
+        if not device:
+            return
+        if device == self._sink_route:
+            return
+        # Don't disturb an active phone stream. The helper restart
+        # would drop bluealsa-aplay's current PCM. Defer until the
+        # phone hangs up and the next refresh sees streaming_from
+        # cleared, at which point this branch fires.
+        if self._status.streaming_from:
+            return
+        try:
+            subprocess.run(
+                ["sudo", "-n", self._helper_path,
+                 "set-sink-route", device],
+                capture_output=True, text=True,
+                timeout=HELPER_TIMEOUT_S, check=True)
+            self._sink_route = device
+        except (subprocess.SubprocessError, FileNotFoundError) as exc:
+            print(f"bt set-sink-route: {exc}",
+                  file=sys.stderr, flush=True)
+
+    def _desired_sink_device(self) -> str:
+        """Pick the ALSA `device` line from MPD's currently-enabled
+        audio_output. If no output is enabled (rare) or the file is
+        unreadable, return "" — the caller skips the route update."""
+        cfg = self._read_mpd_conf_outputs()
+        if not cfg:
+            return ""
+        active_name = ""
+        if self._mpd is not None:
+            try:
+                outs = self._mpd.status.outputs
+            except Exception:
+                outs = ()
+            for o in outs:
+                if getattr(o, "enabled", False):
+                    active_name = o.name
+                    break
+        if active_name and active_name in cfg:
+            return cfg[active_name].get("device", "")
+        # Fallback: first non-bluealsa output. Phone-into-its-own-
+        # bluealsa-loop would just feedback into itself and the user
+        # almost certainly didn't mean to do that.
+        for name, kv in cfg.items():
+            dev = kv.get("device", "")
+            if dev and not dev.startswith("bluealsa:"):
+                return dev
+        return ""
+
+    def _mpd_is_playing(self) -> bool:
+        if self._mpd is None:
+            return False
+        try:
+            return getattr(self._mpd.status, "state", "") == "play"
+        except Exception:
+            return False
+
+    def _mpd_command(self, cmd: str) -> None:
+        if self._mpd is None:
+            return
+        try:
+            self._mpd.command(cmd)
+        except Exception:
+            pass
 
     # --- pair / forget --------------------------------------------------
 

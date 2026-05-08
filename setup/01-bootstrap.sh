@@ -84,14 +84,24 @@ systemctl daemon-reload
 systemctl disable getty@tty1.service 2>/dev/null || true
 systemctl enable clockradio.service
 
-echo "==> 7/9  Bluetooth output helper at /usr/local/sbin/clockradio-bt-output"
+echo "==> 7/9  Bluetooth helper + pair-accept agent"
 # Privileged shim that BluetoothService shells out to via `sudo -n`.
-# Adds/removes the bluealsa MPD output block + restarts mpd. Lives
+# Adds/removes the bluealsa MPD output block + retargets bluealsa-aplay
+# at the active ALSA device + restarts the relevant services. Lives
 # under /usr/local/sbin so the sudoers rule below pins to a stable
 # absolute path, not to a path inside the user-writable repo checkout.
 install -m 0755 -o root -g root \
     "$SRC_DIR/setup/bt-output-helper.sh" \
     /usr/local/sbin/clockradio-bt-output
+
+# bt-agent runs as a system service so phones doing "Just Works"
+# pairing find an agent waiting on the system D-Bus. Always-on; gated
+# in practice by the app toggling discoverable + pairable for a
+# bounded window when the user enables "Receive from phone".
+install -m 0644 "$SRC_DIR/setup/clockradio-bt-agent.service" \
+    /etc/systemd/system/clockradio-bt-agent.service
+systemctl daemon-reload
+systemctl enable --now clockradio-bt-agent.service
 
 echo "==> 8/9  sudoers: $APP_USER may manage wifi + bluetooth + restart mpd"
 # Narrow rules — each pinned to a single absolute command:

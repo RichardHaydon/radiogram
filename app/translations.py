@@ -190,6 +190,9 @@ EN: dict[str, str] = {
     "bluetooth.tag.audio": "♪",
     "bluetooth.tag.connected": "[connected]",
     "bluetooth.tag.paired": "[paired]",
+    "bluetooth.sink.off": "RECEIVE FROM PHONE",
+    "bluetooth.sink.on": "RECEIVE FROM PHONE — ON · {time}",
+    "bluetooth.sink.streaming": "RECEIVING FROM {name}",
 
     # Verse / weather loading
     "verse.loading": "Loading…",
@@ -474,6 +477,9 @@ ES: dict[str, str] = {
     "bluetooth.tag.audio": "♪",
     "bluetooth.tag.connected": "[conectado]",
     "bluetooth.tag.paired": "[emparejado]",
+    "bluetooth.sink.off": "RECIBIR DEL TELEFONO",
+    "bluetooth.sink.on": "RECIBIR DEL TELEFONO — ON · {time}",
+    "bluetooth.sink.streaming": "RECIBIENDO DE {name}",
 
     # Loading
     "verse.loading": "Cargando…",
@@ -754,6 +760,9 @@ NO: dict[str, str] = {
     "bluetooth.tag.audio": "♪",
     "bluetooth.tag.connected": "[tilkoblet]",
     "bluetooth.tag.paired": "[parret]",
+    "bluetooth.sink.off": "MOTTA FRA TELEFON",
+    "bluetooth.sink.on": "MOTTA FRA TELEFON — PA · {time}",
+    "bluetooth.sink.streaming": "MOTTAR FRA {name}",
 
     # Loading
     "verse.loading": "Laster…",

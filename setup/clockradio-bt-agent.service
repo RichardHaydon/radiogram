@@ -1,0 +1,28 @@
+[Unit]
+# Persistent BlueZ pair-accept agent for the clock radio.
+#
+# bt-agent registers a "Just Works" agent (NoInputNoOutput capability)
+# that auto-accepts any pairing request bluez receives from a remote
+# device. The agent is always running, but it only has any effect when
+# the controller is also `pairable + discoverable` — which the app
+# only enables for a 5-minute window when the user toggles
+# Settings → BLUETOOTH → "Receive from phone". Outside that window
+# discoverable is off, so no phone can find us to pair, agent or no.
+#
+# The pairing capability is intentionally minimal: phones doing
+# Just Works pair instantly, phones that demand a 6-digit display
+# code will fall back and fail (we don't have a screen real estate
+# story for code confirmation in v1).
+Description=Clock radio Bluetooth pair-accept agent
+Documentation=man:bt-agent(1)
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bt-agent -c NoInputNoOutput
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=bluetooth.target
