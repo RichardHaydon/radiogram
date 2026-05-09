@@ -59,13 +59,13 @@ from demo_service import CaptionOverlay, DemoService
 import scenes as _scenes_mod
 from scenes import (
     AboutScene, AlarmEditScene, AlarmFiringScene, AlarmListScene,
-    AudioOutputScene, AudioSettingsScene, BackgroundScene,
-    BluetoothPlayingScene, BluetoothScene, BluetoothSpeakerScene,
-    BrightnessScene, DemoIntroScene, DemoSplashScene,
-    DisplaySettingsScene, IdleScene, LanguageScene, LauncherScene,
-    MapCenterScene, QuickPanelScene, RadioScene, SettingsScene,
-    StationListScene, ThemeScene, VerseScene, WeatherLocationScene,
-    WeatherScene, WifiPasswordScene, WifiScene,
+    AudioOutputScene, BackgroundScene, BluetoothPlayingScene,
+    BluetoothScene, BluetoothSpeakerScene, BrightnessScene,
+    DemoIntroScene, DemoSplashScene, DisplaySettingsScene,
+    IdleScene, LanguageScene, LauncherScene, MapCenterScene,
+    QuickPanelScene, RadioScene, SettingsScene, StationListScene,
+    ThemeScene, VerseScene, WeatherLocationScene, WeatherScene,
+    WifiPasswordScene, WifiScene,
 )
 
 
@@ -1000,10 +1000,6 @@ def main() -> int:
         compositor=compositor, station_service=stations,
     )
     scenes["settings"] = SettingsScene(
-        theme, display.canvas_w, display.canvas_h,
-        compositor=compositor,
-    )
-    scenes["audio_settings"] = AudioSettingsScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor,
     )

@@ -999,11 +999,14 @@ def _settings_tile_grid(scene: "Scene", canvas_w: int, canvas_h: int,
 class SettingsScene(Scene):
     """Overlay: top-level settings, presented as a 3×2 tile grid.
 
-    Six groups: WIFI · AUDIO · DISPLAY / LANGUAGE · DEMO · ABOUT.
-    AUDIO and DISPLAY are group tiles — tapping them opens a sub-page
-    (also a tile grid) with the leaf settings. The grouping keeps the
-    top page to six big, finger-friendly tiles instead of nine small
-    rows that were hard to read at bedside distance."""
+    Six groups: WIFI · AUDIO · DISPLAY / LANGUAGE · DEMO · BLUETOOTH.
+    BLUETOOTH was promoted out of the old AUDIO sub-page because phone
+    pairing is the most-tapped audio-related feature and deserved a
+    direct path; the AUDIO tile now opens the output picker straight
+    away (the only thing left under it). DISPLAY remains a sub-page
+    (theme/background/brightness — three leaves worth grouping). ABOUT
+    is reachable via a small ⓘ icon button in the header — kept for
+    diagnostics without occupying a full tile."""
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor):
@@ -1016,17 +1019,32 @@ class SettingsScene(Scene):
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
             Rect(int(canvas_w * 0.20), 0,
-                 int(canvas_w * 0.66), head_h),
+                 int(canvas_w * 0.60), head_h),
             text_src=lambda: _t("scene.settings.title"),
             font_factor=0.55,
             color_role="fg_dim",
+        ))
+        # ⓘ icon button on the right of the header → AboutScene. Sized
+        # to match the BACK / HOME chrome on the left so the header
+        # row reads as a balanced trio of affordances.
+        info_h = int(head_h * 0.80)
+        info_w = info_h
+        right_pad = int(canvas_w * 0.025)
+        self.add(IconButton(
+            Rect(canvas_w - right_pad - info_w,
+                 int(head_h * 0.10), info_w, info_h),
+            on_press=lambda: compositor.set_overlay("about"),
+            icon_drawer=SETTINGS_ICONS["info"],
+            color_role="fg_dim",
+            outline_width=2,
+            icon_factor=0.65,
         ))
         tiles = [
             ((lambda: _t("settings.row.wifi")),
              lambda: compositor.set_overlay("wifi"),
              _adapt_settings_icon(SETTINGS_ICONS.get("wifi"))),
             ((lambda: _t("settings.row.audio")),
-             lambda: compositor.set_overlay("audio_settings"),
+             lambda: compositor.set_overlay("audio_output"),
              _adapt_settings_icon(SETTINGS_ICONS.get("speaker"))),
             ((lambda: _t("settings.row.display")),
              lambda: compositor.set_overlay("display_settings"),
@@ -1037,48 +1055,12 @@ class SettingsScene(Scene):
             ((lambda: _t("settings.row.demo")),
              lambda: compositor.set_overlay("demo_intro"),
              _adapt_settings_icon(SETTINGS_ICONS.get("play"))),
-            ((lambda: _t("settings.row.about")),
-             lambda: compositor.set_overlay("about"),
-             _adapt_settings_icon(SETTINGS_ICONS.get("info"))),
-        ]
-        _settings_tile_grid(self, canvas_w, canvas_h, head_h,
-                            tiles, cols=3, rows=2)
-
-
-class AudioSettingsScene(Scene):
-    """Overlay: AUDIO group page. Two leaf tiles — OUTPUT (the speaker /
-    output picker) and BLUETOOTH (the radio-as-BT-speaker lifecycle).
-    Reached from Settings → AUDIO; back returns to Settings."""
-
-    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
-                 compositor):
-        super().__init__(theme, canvas_w, canvas_h)
-        head_h = int(canvas_h * 0.12)
-        self.add(_back_button(
-            canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
-        ))
-        self.add(_home_button(canvas_w, head_h, compositor))
-        self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
-                 int(canvas_w * 0.66), head_h),
-            text_src=lambda: _t("scene.audio_settings.title"),
-            font_factor=0.55,
-            color_role="fg_dim",
-        ))
-        tiles = [
-            ((lambda: _t("settings.row.output")),
-             lambda: compositor.set_overlay("audio_output"),
-             _adapt_settings_icon(SETTINGS_ICONS.get("speaker"))),
             ((lambda: _t("settings.row.bluetooth")),
              lambda: compositor.set_overlay("bluetooth"),
              _adapt_settings_icon(SETTINGS_ICONS.get("bluetooth"))),
         ]
-        # 2 tiles in a 2×1 grid — wide tiles read better than 2×2 with
-        # half the slots empty, and matches how phone settings render
-        # short groups (single row of large tiles).
         _settings_tile_grid(self, canvas_w, canvas_h, head_h,
-                            tiles, cols=2, rows=1)
+                            tiles, cols=3, rows=2)
 
 
 class DisplaySettingsScene(Scene):
@@ -1649,7 +1631,7 @@ class BluetoothScene(Scene):
         self._head_h = head_h
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("audio_settings"),
+            on_press=lambda: compositor.set_overlay("settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
@@ -3583,7 +3565,7 @@ class AudioOutputScene(Scene):
         self._head_h = head_h
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("audio_settings"),
+            on_press=lambda: compositor.set_overlay("settings"),
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
