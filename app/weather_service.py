@@ -28,6 +28,10 @@ GEO_URL = (
     "?fields=status,message,country,city,lat,lon"
 )
 WX_URL = "https://api.open-meteo.com/v1/forecast"
+# Free geocoding endpoint from the same provider, no key needed.
+# `count=10` is plenty for a list-sized result panel; `language=en`
+# keeps city/admin labels in a script the keyboard can address.
+GEO_SEARCH_URL = "https://geocoding-api.open-meteo.com/v1/search"
 USER_AGENT = "clockradio/1.0 (https://github.com/RichardHaydon/radiogram)"
 
 
@@ -95,6 +99,16 @@ class DayForecast:
 
 
 @dataclass(frozen=True)
+class LocationSuggestion:
+    """One row in the location-picker results panel. `label` is the
+    pre-formatted "Yokohama, Kanagawa, Japan" shown in the UI; the
+    lat/lon pair is what gets persisted when the user taps."""
+    label: str
+    lat: float
+    lon: float
+
+
+@dataclass(frozen=True)
 class WeatherStatus:
     location: str = ""
     last_fetch_t: float = 0.0
@@ -105,6 +119,15 @@ class WeatherStatus:
     cur_label: str = ""
     cur_wind_kmh: float = 0.0
     days: tuple[DayForecast, ...] = field(default_factory=tuple)
+    # Location-picker state. The UI submits a query via
+    # WeatherService.search_locations(q); the worker thread does the
+    # HTTP call and updates these fields. `search_query` is held so a
+    # repaint after a successful search can show "Results for X".
+    search_query: str = ""
+    search_busy: bool = False
+    search_error: str = ""
+    search_results: tuple[LocationSuggestion, ...] = field(
+        default_factory=tuple)
 
 
 class WeatherService:
@@ -126,6 +149,20 @@ class WeatherService:
 
     def refresh(self) -> None:
         self._cmd_q.put(("refresh",))
+
+    def search_locations(self, query: str) -> None:
+        """Look up city names matching `query` via the Open-Meteo
+        geocoding API. Asynchronous: results land in
+        status.search_results once the worker thread completes the
+        HTTP call (typically <1s). Empty queries clear results."""
+        self._cmd_q.put(("search", str(query)))
+
+    def set_location(self, lat: float, lon: float, label: str) -> None:
+        """Override the IP-geo guess. Persists to location.json,
+        clobbers any cached lat/lon so the next refresh re-reads, and
+        triggers an immediate forecast re-fetch."""
+        self._cmd_q.put(("set_location", float(lat), float(lon),
+                         str(label)))
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -152,7 +189,13 @@ class WeatherService:
             except queue.Empty:
                 cmd = None
             if cmd is not None:
-                self._safe_refresh()
+                kind = cmd[0]
+                if kind == "refresh":
+                    self._safe_refresh()
+                elif kind == "search":
+                    self._safe_search(cmd[1])
+                elif kind == "set_location":
+                    self._safe_set_location(cmd[1], cmd[2], cmd[3])
                 last = time.monotonic()
                 continue
             if time.monotonic() - last >= WEATHER_POLL_S:
@@ -165,6 +208,78 @@ class WeatherService:
         except Exception as exc:
             print(f"weather: {exc}", file=sys.stderr, flush=True)
             self._set(busy=False, last_error=str(exc))
+
+    def _safe_search(self, query: str) -> None:
+        q = (query or "").strip()
+        if not q:
+            self._set(search_query="", search_busy=False,
+                      search_error="", search_results=())
+            return
+        self._set(search_query=q, search_busy=True,
+                  search_error="", search_results=())
+        try:
+            params = {"name": q, "count": 10, "language": "en",
+                      "format": "json"}
+            url = GEO_SEARCH_URL + "?" + urllib.parse.urlencode(params)
+            data = self._fetch_json(url)
+            results: list[LocationSuggestion] = []
+            for r in (data.get("results") or []):
+                try:
+                    name = str(r.get("name") or "").strip()
+                    if not name:
+                        continue
+                    # Build a "City, Region, Country" label, dropping
+                    # any segment that's missing or duplicates the
+                    # previous one (e.g. small countries where region
+                    # == country).
+                    parts = [name]
+                    seen = {name.lower()}
+                    for k in ("admin1", "country"):
+                        v = str(r.get(k) or "").strip()
+                        if v and v.lower() not in seen:
+                            parts.append(v)
+                            seen.add(v.lower())
+                    label = ", ".join(parts)
+                    results.append(LocationSuggestion(
+                        label=label,
+                        lat=float(r["latitude"]),
+                        lon=float(r["longitude"]),
+                    ))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            self._set(search_busy=False,
+                      search_results=tuple(results))
+        except Exception as exc:
+            print(f"weather geo search: {exc}",
+                  file=sys.stderr, flush=True)
+            self._set(search_busy=False, search_error=str(exc))
+
+    def _safe_set_location(self, lat: float, lon: float,
+                           label: str) -> None:
+        try:
+            self._location_path.parent.mkdir(parents=True, exist_ok=True)
+            self._location_path.write_text(json.dumps({
+                "lat": float(lat),
+                "lon": float(lon),
+                "label": label,
+            }, indent=2))
+        except OSError as exc:
+            print(f"location write: {exc}",
+                  file=sys.stderr, flush=True)
+            self._set(last_error=str(exc))
+            return
+        # Drop the cached lat/lon so the next refresh re-reads from
+        # disk (which is what _ensure_location keys off when the
+        # in-memory pair is None).
+        self._lat = None
+        self._lon = None
+        self._geo_label = ""
+        # Clear the picker scratchpad and immediately fetch for the
+        # new spot — the picker scene navigates back as soon as the
+        # tap fires, so the user sees the new forecast filling in.
+        self._set(location=label, search_query="", search_results=(),
+                  search_error="", search_busy=False)
+        self._safe_refresh()
 
     def _ensure_location(self) -> None:
         if self._lat is not None and self._lon is not None:

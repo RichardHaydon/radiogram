@@ -2375,21 +2375,36 @@ class WeatherScene(Scene):
         ))
         # Current conditions block
         cur_y = head_h
-        cur_h = int(canvas_h * 0.36)
+        cur_h = int(canvas_h * 0.40)
         self._cur_y = cur_y
         self._cur_h = cur_h
-        # Location across the top
-        loc_h = int(cur_h * 0.20)
+        # Two stacked lines at the top of the block:
+        #   1. Weekday + numeric date — always shown, locale-aware.
+        #   2. Location — small, dim, *tappable* (opens the picker).
+        # The location row is a Button so a tap anywhere on it routes
+        # to WeatherLocationScene; outline_width=0 keeps it looking
+        # like a label, not a chunky widget. Adding a trailing "›"
+        # is the only affordance hinting at tappability.
+        date_h = int(cur_h * 0.16)
+        loc_h = int(cur_h * 0.16)
         self.add(TextWidget(
-            Rect(0, cur_y, canvas_w, loc_h),
-            text_src=lambda: self._loc_line(),
-            font_factor=0.50,
-            color_role="fg_dim",
+            Rect(0, cur_y, canvas_w, date_h),
+            text_src=self._date_line,
+            font_factor=0.55,
+            color_role="fg_bright",
+        ))
+        self.add(Button(
+            Rect(0, cur_y + date_h, canvas_w, loc_h),
+            label_src=self._loc_line,
+            on_press=lambda: compositor.set_overlay("weather_location"),
+            font_factor=0.45,
             font_role="regular",
+            color_role="fg_dim",
+            outline_width=0,
         ))
         # Below location: icon (left) + temp/condition (right).
-        body_y = cur_y + loc_h
-        body_h = cur_h - loc_h
+        body_y = cur_y + date_h + loc_h
+        body_h = cur_h - date_h - loc_h
         icon_w = int(canvas_w * 0.34)
         self.add(WeatherIconWidget(
             Rect(int(canvas_w * 0.04), body_y, icon_w, body_h),
@@ -2420,7 +2435,34 @@ class WeatherScene(Scene):
             return _t("weather.locating")
         if s.last_error:
             return _t("wifi.error", message=s.last_error)
-        return s.location or ""
+        # Append a chevron so the row reads as tappable. Uses the
+        # i18n-managed location string when nothing has been set yet
+        # (e.g. very first boot before the IP-geo lookup completes).
+        loc = s.location or _t("weather.tap_to_set")
+        return f"{loc}  ›"
+
+    def _date_line(self) -> str:
+        """Today's weekday + numeric date, e.g. "Tuesday · 9 May".
+        Uses the localised long weekday names from translations and
+        the system's `%-d %b` for the date (numeric day is universal;
+        month abbreviation falls back to the locale shipped with
+        the OS image, English on a stock Pi)."""
+        from datetime import date
+        try:
+            today = date.today()
+        except Exception:
+            return ""
+        wkey = ("day.long.mon", "day.long.tue", "day.long.wed",
+                "day.long.thu", "day.long.fri", "day.long.sat",
+                "day.long.sun")[today.weekday()]
+        weekday = _t(wkey)
+        # `%-d` is POSIX-only (Linux); on Windows we'd need %#d. Pi is
+        # Linux so this is safe. %b gives a 3-letter month abbreviation.
+        try:
+            datestr = today.strftime("%-d %b")
+        except ValueError:
+            datestr = today.strftime("%d %b").lstrip("0")
+        return f"{weekday}  ·  {datestr}"
 
     def _temp_line(self) -> str:
         s = self._weather.status
@@ -2508,8 +2550,13 @@ class WeatherScene(Scene):
 
     def state_key(self) -> tuple:
         s = self._weather.status
+        # Fold today's ISO date into the key so the weekday + numeric
+        # date readout repaints automatically when the clock crosses
+        # midnight. Cheap (one date.today() call per state_key probe).
+        from datetime import date
+        today_iso = date.today().isoformat()
         return (
-            s.location, s.busy, s.last_error,
+            today_iso, s.location, s.busy, s.last_error,
             (round(s.cur_temp_c) if s.cur_temp_c is not None else None),
             s.cur_code, round(s.cur_wind_kmh),
             tuple((d.date, d.code, round(d.high_c), round(d.low_c),
@@ -2526,6 +2573,222 @@ class WeatherScene(Scene):
 
     def on_show(self) -> None:
         self._weather.refresh()
+
+
+class WeatherLocationScene(Scene):
+    """Overlay: pick a city/place name and persist it as the weather
+    location. Reached by tapping the location row inside WeatherScene.
+
+    Layout (top to bottom):
+      • header — BACK / HOME / title
+      • entry  — the in-progress query, plus CLEAR + SEARCH on the right
+      • keyboard — compact 3-row QWERTY + space/backspace
+      • results — up to MAX_RESULTS tappable rows from Open-Meteo geocoding
+
+    Search is asynchronous: tapping SEARCH enqueues a service command,
+    the worker thread does the HTTP call, and the next render shows
+    `search_busy` / results / errors via the WeatherStatus snapshot.
+    Tapping a result row persists the lat/lon, navigates back, and the
+    weather scene's snapshot refreshes within ~1 s."""
+
+    MAX_RESULTS = 5
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, weather_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._weather = weather_service
+        self._query: str = ""
+
+    # --- mutations -----------------------------------------------------
+
+    def _add_char(self, c: str) -> None:
+        if len(self._query) >= 40:
+            return
+        self._query += c
+
+    def _backspace(self) -> None:
+        self._query = self._query[:-1]
+
+    def _clear(self) -> None:
+        self._query = ""
+
+    def _do_search(self) -> None:
+        q = self._query.strip()
+        if not q:
+            return
+        self._weather.search_locations(q)
+
+    def _on_pick(self, sug) -> None:
+        self._weather.set_location(sug.lat, sug.lon, sug.label)
+        # Hop back immediately — the user sees the new label populate
+        # in the WeatherScene as soon as the worker thread persists.
+        self._compositor.set_overlay("weather")
+
+    def on_show(self) -> None:
+        # Reset the scratchpad each time the picker opens, so a stale
+        # result list from a previous visit doesn't mislead the user.
+        self._query = ""
+        self._weather.search_locations("")
+
+    # --- layout --------------------------------------------------------
+
+    def _build(self) -> None:
+        self.widgets.clear()
+        cw, ch = self.canvas_w, self.canvas_h
+
+        head_h = int(ch * 0.10)
+        self.add(_back_button(
+            cw, head_h,
+            on_press=lambda: self._compositor.set_overlay("weather"),
+        ))
+        self.add(_home_button(cw, head_h, self._compositor))
+        self.add(TextWidget(
+            Rect(int(cw * 0.20), 0, int(cw * 0.60), head_h),
+            text_src=lambda: _t("scene.weather_location.title"),
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+
+        # Entry row: query text on the left, CLEAR + SEARCH on the right.
+        entry_y = head_h + int(ch * 0.01)
+        entry_h = int(ch * 0.10)
+        self.add(TextWidget(
+            Rect(int(cw * 0.04), entry_y, int(cw * 0.50), entry_h),
+            text_src=(self._query
+                      if self._query else _t("weather.search_placeholder")),
+            font_factor=0.55,
+            color_role=("fg_bright" if self._query else "fg_dim"),
+            font_role="regular",
+        ))
+        self.add(Button(
+            Rect(int(cw * 0.56), entry_y + int(entry_h * 0.10),
+                 int(cw * 0.18), int(entry_h * 0.80)),
+            label_src=lambda: _t("button.clear"),
+            on_press=self._clear,
+            font_factor=0.42,
+            color_role="fg_dim",
+        ))
+        self.add(Button(
+            Rect(int(cw * 0.76), entry_y + int(entry_h * 0.10),
+                 int(cw * 0.20), int(entry_h * 0.80)),
+            label_src=lambda: _t("button.search"),
+            on_press=self._do_search,
+            font_factor=0.50,
+            color_role=("fg_bright" if self._query.strip() else "fg_dim"),
+        ))
+
+        # Compact 3-row QWERTY (no shift, no symbols — city names are
+        # forgiving and Open-Meteo's matcher is fuzzy enough).
+        kb_top = entry_y + entry_h + int(ch * 0.015)
+        kb_h = int(ch * 0.36)
+        row_h = kb_h // 3
+        cell_w = cw // 10
+        self._row(kb_top, row_h, cell_w, "qwertyuiop", offset=0)
+        self._row(kb_top + row_h, row_h, cell_w, "asdfghjkl",
+                  offset=cell_w // 2)
+        # Bottom row: BKSP (1.5w) + 7 letters + SPACE (rest).
+        row_y = kb_top + 2 * row_h
+        bw = int(cell_w * 1.5)
+        self.add(Button(
+            Rect(0, row_y, bw, row_h),
+            label_src=lambda: _t("button.del"),
+            on_press=self._backspace,
+            font_factor=0.32,
+            color_role="fg_dim",
+        ))
+        for i, c in enumerate("zxcvbnm"):
+            x = bw + i * cell_w
+            self.add(Button(
+                Rect(x, row_y, cell_w, row_h),
+                label_src=c,
+                on_press=lambda ch=c: self._add_char(ch),
+                font_factor=0.55,
+            ))
+        sp_x = bw + 7 * cell_w
+        self.add(Button(
+            Rect(sp_x, row_y, cw - sp_x, row_h),
+            label_src=lambda: _t("button.space"),
+            on_press=lambda: self._add_char(" "),
+            font_factor=0.36,
+            color_role="fg_dim",
+        ))
+
+        # Results list (or status string when nothing to show).
+        res_y = kb_top + kb_h + int(ch * 0.015)
+        res_h = ch - res_y - int(ch * 0.02)
+        s = self._weather.status
+        if s.search_busy:
+            self.add(TextWidget(
+                Rect(0, res_y, cw, res_h),
+                text_src=lambda: _t("weather.search_busy"),
+                font_factor=0.05,
+                color_role="fg_dim",
+                font_role="regular",
+            ))
+            return
+        if s.search_error:
+            self.add(TextWidget(
+                Rect(0, res_y, cw, res_h),
+                text_src=lambda: _t("weather.search_error",
+                                    message=s.search_error),
+                font_factor=0.04,
+                color_role="fg_dim",
+                font_role="regular",
+            ))
+            return
+        results = list(s.search_results)[:self.MAX_RESULTS]
+        if not results:
+            # Two phases of "nothing to show": a placeholder when the
+            # user hasn't pressed SEARCH yet (search_query empty), and
+            # an explicit "no matches" once a query came back empty.
+            key = ("weather.search_no_results" if s.search_query
+                   else "weather.search_hint")
+            self.add(TextWidget(
+                Rect(0, res_y, cw, res_h),
+                text_src=lambda k=key: _t(k),
+                font_factor=0.05,
+                color_role="fg_dim",
+                font_role="regular",
+            ))
+            return
+        cell_h = res_h // self.MAX_RESULTS
+        for i, sug in enumerate(results):
+            self.add(Button(
+                Rect(int(cw * 0.04), res_y + i * cell_h,
+                     int(cw * 0.92), cell_h - 6),
+                label_src=sug.label,
+                on_press=lambda s=sug: self._on_pick(s),
+                font_factor=0.36,
+                color_role="fg_bright",
+            ))
+
+    def _row(self, y: int, h: int, cell_w: int, chars: str,
+             *, offset: int) -> None:
+        for i, c in enumerate(chars):
+            x = offset + i * cell_w
+            self.add(Button(
+                Rect(x, y, cell_w, h),
+                label_src=c,
+                on_press=lambda ch=c: self._add_char(ch),
+                font_factor=0.55,
+            ))
+
+    # --- Scene overrides ----------------------------------------------
+
+    def state_key(self) -> tuple:
+        s = self._weather.status
+        return (self._query, s.search_busy, s.search_query,
+                s.search_error,
+                tuple((r.label, r.lat, r.lon) for r in s.search_results))
+
+    def render(self) -> Image.Image:
+        self._build()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._build()
+        return super().hit(cx, cy)
 
 
 class StationListScene(Scene):

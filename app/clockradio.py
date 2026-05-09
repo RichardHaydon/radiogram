@@ -64,8 +64,8 @@ from scenes import (
     BrightnessScene, DemoIntroScene, DemoSplashScene,
     DisplaySettingsScene, IdleScene, LanguageScene, LauncherScene,
     MapCenterScene, QuickPanelScene, RadioScene, SettingsScene,
-    StationListScene, ThemeScene, VerseScene, WeatherScene,
-    WifiPasswordScene, WifiScene,
+    StationListScene, ThemeScene, VerseScene, WeatherLocationScene,
+    WeatherScene, WifiPasswordScene, WifiScene,
 )
 
 
@@ -1028,6 +1028,10 @@ def main() -> int:
         compositor=compositor, bluetooth_service=bluetooth,
     )
     scenes["weather"] = WeatherScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, weather_service=weather,
+    )
+    scenes["weather_location"] = WeatherLocationScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, weather_service=weather,
     )
