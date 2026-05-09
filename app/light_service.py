@@ -1,0 +1,192 @@
+"""Ambient light service — LDR on GPIO17 via the RC charge-time technique.
+
+Polls once a second, smooths with an EMA, and exposes a 0..1 boost gain.
+The user's brightness setting represents the comfort point in a *dim*
+room; brighter ambient lifts the panel above that toward 100%.
+
+If the sensor isn't wired or the cap fails (5 consecutive timeouts) the
+service flags itself unavailable and gain() returns 0 — the radio falls
+back to the user's static brightness with no further intervention.
+"""
+from __future__ import annotations
+
+import math
+import threading
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+try:
+    import RPi.GPIO as GPIO  # type: ignore
+    _HAS_GPIO = True
+    _IMPORT_ERR = ""
+except Exception as _exc:
+    GPIO = None  # type: ignore
+    _HAS_GPIO = False
+    _IMPORT_ERR = f"{type(_exc).__name__}: {_exc}"
+
+
+PIN = 17
+DISCHARGE_S = 0.005
+TIMEOUT_COUNT = 200000
+
+# Counts go *down* with brighter light. DIM_REF is the "no boost" anchor
+# (matches the room the user calibrated their brightness setting in);
+# BRIGHT_REF is the "full boost" anchor (clamps to 100%). Calibrated
+# against the user's actual bedside ambient — ~73k counts in a dimly-
+# lit room — so the user's setting is honoured exactly at and below
+# that level, with boost ramping in only when the room becomes
+# noticeably brighter than that. BRIGHT_REF=500 saturates near typical
+# room-lit indoor levels.
+DIM_REF_COUNT = 75000
+BRIGHT_REF_COUNT = 500
+
+POLL_S = 0.3
+# Asymmetric smoothing: panel should lift quickly when a room light
+# flicks on (so the user isn't reading a dim screen in a bright room)
+# but ease back gently — a hand-shadow passing over the LDR shouldn't
+# plunge the panel to bedside dim mid-glance, and lights-off in a
+# transitional moment should fade rather than snap.
+ATTACK_TAU_S = 0.3    # count dropping (room getting brighter)
+RELEASE_TAU_S = 8.0   # count rising  (room getting darker)
+# 5 consecutive timeouts at 0.3 s poll = ~1.5 s before flagging the
+# sensor unavailable, still well under any human-noticeable lag.
+FAIL_STREAK_FOR_OUTAGE = 5
+
+
+@dataclass(frozen=True)
+class LightStatus:
+    available: bool = False
+    raw_count: int = 0
+    smooth_count: float = 0.0
+    gain: float = 0.0
+
+
+class LightService:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._status = LightStatus()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._fail_streak = 0
+        self._outage_logged = False
+
+    @property
+    def status(self) -> LightStatus:
+        with self._lock:
+            return self._status
+
+    def gain(self) -> float:
+        with self._lock:
+            return self._status.gain if self._status.available else 0.0
+
+    def start(self) -> None:
+        if not _HAS_GPIO:
+            print(f"light: RPi.GPIO unavailable ({_IMPORT_ERR}); "
+                  "auto-brightness disabled", flush=True)
+            return
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setwarnings(False)
+        except Exception as exc:
+            print(f"light: GPIO setmode failed ({exc}); disabled",
+                  flush=True)
+            return
+        self._thread = threading.Thread(target=self._run,
+                                        name="light", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        if _HAS_GPIO:
+            try:
+                GPIO.cleanup(PIN)
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        smooth: Optional[float] = None
+        alpha_attack = 1.0 - math.exp(-POLL_S / ATTACK_TAU_S)
+        alpha_release = 1.0 - math.exp(-POLL_S / RELEASE_TAU_S)
+        last_heartbeat = 0.0
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            try:
+                count = self._read_count()
+            except Exception as exc:
+                print(f"light: read failed: {exc}", flush=True)
+                count = TIMEOUT_COUNT
+
+            timed_out = count >= TIMEOUT_COUNT
+            if timed_out:
+                self._fail_streak += 1
+            else:
+                self._fail_streak = 0
+
+            available = self._fail_streak < FAIL_STREAK_FOR_OUTAGE
+            if not available and not self._outage_logged:
+                print("light: sensor unavailable (5 consecutive timeouts) "
+                      "— falling back to user brightness", flush=True)
+                self._outage_logged = True
+            elif available and self._outage_logged:
+                print("light: sensor recovered", flush=True)
+                self._outage_logged = False
+
+            if available and not timed_out:
+                if smooth is None:
+                    smooth = float(count)
+                else:
+                    a = alpha_attack if count < smooth else alpha_release
+                    smooth += a * (count - smooth)
+                gain = self._gain_for(smooth)
+            else:
+                smooth = None
+                gain = 0.0
+
+            with self._lock:
+                self._status = LightStatus(
+                    available=available,
+                    raw_count=count,
+                    smooth_count=smooth or 0.0,
+                    gain=gain,
+                )
+
+            now = time.monotonic()
+            if now - last_heartbeat >= 30.0:
+                last_heartbeat = now
+                print(f"light: count={count} smooth={int(smooth or 0)} "
+                      f"gain={gain:.2f} avail={available}", flush=True)
+
+            elapsed = now - t0
+            self._stop.wait(max(0.0, POLL_S - elapsed))
+
+    @staticmethod
+    def _read_count() -> int:
+        # Phase 1: drain the cap by driving the pin LOW as an output.
+        GPIO.setup(PIN, GPIO.OUT)
+        GPIO.output(PIN, GPIO.LOW)
+        time.sleep(DISCHARGE_S)
+        # Phase 2: high-Z input — cap charges through the LDR.
+        GPIO.setup(PIN, GPIO.IN)
+        # Phase 3: count loop iterations until the input crosses HIGH.
+        n = 0
+        while GPIO.input(PIN) == GPIO.LOW:
+            n += 1
+            if n >= TIMEOUT_COUNT:
+                return TIMEOUT_COUNT
+        return n
+
+    @staticmethod
+    def _gain_for(smooth_count: float) -> float:
+        # Linear in 1/count, which scales roughly with illuminance.
+        if smooth_count <= 0:
+            return 1.0
+        x = 1.0 / smooth_count
+        x_dim = 1.0 / DIM_REF_COUNT
+        x_brt = 1.0 / BRIGHT_REF_COUNT
+        if x_brt <= x_dim:
+            return 0.0
+        gain = (x - x_dim) / (x_brt - x_dim)
+        return max(0.0, min(1.0, gain))

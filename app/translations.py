@@ -156,6 +156,7 @@ EN: dict[str, str] = {
     "brightness.active": "Active",
     "brightness.idle_dim": "Idle dim",
     "brightness.night_red": "Night red",
+    "brightness.auto_ambient": "Auto adjust to room light",
 
     # Background scene
     "background.style.none": "None",
@@ -487,6 +488,7 @@ ES: dict[str, str] = {
     "brightness.active": "Activo",
     "brightness.idle_dim": "Reposo",
     "brightness.night_red": "Rojo nocturno",
+    "brightness.auto_ambient": "Ajuste automático a la luz",
 
     # Background
     "background.style.none": "Ninguno",
@@ -813,6 +815,7 @@ NO: dict[str, str] = {
     "brightness.active": "Aktiv",
     "brightness.idle_dim": "Hvile",
     "brightness.night_red": "Nattrod",
+    "brightness.auto_ambient": "Tilpass til romlys",
 
     # Background
     "background.style.none": "Ingen",

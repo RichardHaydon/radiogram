@@ -3466,15 +3466,25 @@ class BrightnessScene(Scene):
             minus=lambda: self._svc.step_dim(-1),
             plus=lambda: self._svc.step_dim(+1),
         )
-        # Bedside "night red" toggle. Tints the rendered image toward
-        # deep red so the panel emits as little blue/green as possible
-        # — preserves dark adaptation and minimises melatonin
-        # disruption when the panel is glanced at in the dark.
-        nr_y = body_top + 2 * band_h + int(body_h * 0.08)
-        nr_h = band_h - int(body_h * 0.04)
+        # Two stacked toggles in the third band: auto-ambient on top
+        # (the everyday lift-with-room-light behaviour), night-red
+        # below (the deep-red bedside tint that preserves dark
+        # adaptation when the panel is glanced at in the dark).
+        toggles_y = body_top + 2 * band_h + int(body_h * 0.06)
+        toggles_total_h = band_h - int(body_h * 0.02)
+        gap = int(body_h * 0.02)
+        toggle_h = (toggles_total_h - gap) // 2
         self.add(CheckboxRow(
-            Rect(int(canvas_w * 0.10), nr_y,
-                 int(canvas_w * 0.80), nr_h),
+            Rect(int(canvas_w * 0.10), toggles_y,
+                 int(canvas_w * 0.80), toggle_h),
+            label_src=lambda: _t("brightness.auto_ambient"),
+            is_on_src=lambda: self._svc.config.auto_ambient,
+            on_press=lambda: self._svc.toggle_auto_ambient(),
+            font_factor=0.40,
+        ))
+        self.add(CheckboxRow(
+            Rect(int(canvas_w * 0.10), toggles_y + toggle_h + gap,
+                 int(canvas_w * 0.80), toggle_h),
             label_src=lambda: _t("brightness.night_red"),
             is_on_src=lambda: self._svc.config.night_red,
             on_press=lambda: self._svc.toggle_night_red(),

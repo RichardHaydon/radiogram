@@ -38,6 +38,11 @@ class BrightnessConfig:
     # Preserves dark adaptation and minimises melatonin disruption
     # the way an astronomer's red filter does.
     night_red: bool = False
+    # Auto-brightness from the LDR on GPIO17. The user's percent
+    # settings represent comfort in a *dim* room; when ambient is
+    # brighter, the LightService gain lifts the panel toward 100%.
+    # Default ON — the feature is the whole point of the sensor.
+    auto_ambient: bool = True
 
 
 class BrightnessService:
@@ -54,6 +59,7 @@ class BrightnessService:
                                  ACTIVE_LEVELS),
                 dim_pct=_snap(int(d.get("dim_pct", 5)), DIM_LEVELS),
                 night_red=bool(d.get("night_red", False)),
+                auto_ambient=bool(d.get("auto_ambient", True)),
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return BrightnessConfig()
@@ -61,7 +67,8 @@ class BrightnessService:
     def _save(self) -> None:
         d = {"active_pct": self._cfg.active_pct,
              "dim_pct": self._cfg.dim_pct,
-             "night_red": self._cfg.night_red}
+             "night_red": self._cfg.night_red,
+             "auto_ambient": self._cfg.auto_ambient}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(d, indent=2))
         os.replace(tmp, self.path)
@@ -75,7 +82,8 @@ class BrightnessService:
         if new != self._cfg.active_pct:
             self._cfg = BrightnessConfig(
                 active_pct=new, dim_pct=self._cfg.dim_pct,
-                night_red=self._cfg.night_red)
+                night_red=self._cfg.night_red,
+                auto_ambient=self._cfg.auto_ambient)
             self._save()
 
     def step_dim(self, direction: int) -> None:
@@ -83,7 +91,8 @@ class BrightnessService:
         if new != self._cfg.dim_pct:
             self._cfg = BrightnessConfig(
                 active_pct=self._cfg.active_pct, dim_pct=new,
-                night_red=self._cfg.night_red)
+                night_red=self._cfg.night_red,
+                auto_ambient=self._cfg.auto_ambient)
             self._save()
 
     def toggle_night_red(self) -> bool:
@@ -91,9 +100,20 @@ class BrightnessService:
             active_pct=self._cfg.active_pct,
             dim_pct=self._cfg.dim_pct,
             night_red=not self._cfg.night_red,
+            auto_ambient=self._cfg.auto_ambient,
         )
         self._save()
         return self._cfg.night_red
+
+    def toggle_auto_ambient(self) -> bool:
+        self._cfg = BrightnessConfig(
+            active_pct=self._cfg.active_pct,
+            dim_pct=self._cfg.dim_pct,
+            night_red=self._cfg.night_red,
+            auto_ambient=not self._cfg.auto_ambient,
+        )
+        self._save()
+        return self._cfg.auto_ambient
 
 
 def _snap(v: int, levels: tuple[int, ...]) -> int:

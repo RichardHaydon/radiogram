@@ -46,6 +46,7 @@ from background_service import BackgroundService
 from bluetooth_service import BluetoothService
 from brightness_service import BrightnessService
 from i18n_service import I18nService
+from light_service import LightService
 from mpd_service import MPDService
 from station_service import StationService
 from stations import StationStore
@@ -827,7 +828,11 @@ def main() -> int:
 
     brightness = BrightnessService(BRIGHTNESS_PATH)
     print(f"brightness: active={brightness.config.active_pct}% "
-          f"dim={brightness.config.dim_pct}%", flush=True)
+          f"dim={brightness.config.dim_pct}% "
+          f"auto_ambient={brightness.config.auto_ambient}", flush=True)
+
+    light = LightService()
+    light.start()
 
     background = BackgroundService(BACKGROUND_PATH)
     world_map = WorldMapService(display.canvas_w, display.canvas_h,
@@ -1114,16 +1119,33 @@ def main() -> int:
             return max(1, int(round(target * backlight.maximum))), 1.0
         return 1, max(SW_FLOOR, target / HW_FLOOR)
 
+    def _apply_ambient(pct: int) -> int:
+        # User percent is the dim-room baseline; LightService.gain
+        # lifts it toward 100 when ambient gets brighter. No effect
+        # when the toggle is off or the sensor is unavailable.
+        if not brightness.config.auto_ambient or not light.status.available:
+            return pct
+        return int(round(pct + light.gain() * (100 - pct)))
+
     def active_target() -> tuple[int, tuple[float, float, float]]:
         # Active mode is never tinted — full colour even when night_red
         # is enabled. The red bias only kicks in once we've gone idle,
         # which is the bedside-glance scenario.
-        bl, sw = _resolve(brightness.config.active_pct)
+        bl, sw = _resolve(_apply_ambient(brightness.config.active_pct))
         return bl, (sw, sw, sw)
 
     def idle_dim_target() -> tuple[int, tuple[float, float, float]]:
-        bl, sw = _resolve(brightness.config.dim_pct)
-        if brightness.config.night_red:
+        bl, sw = _resolve(_apply_ambient(brightness.config.dim_pct))
+        # Night-red only makes sense in a dim room — in bright ambient
+        # the deep-red tint just hurts legibility. Suppress when the
+        # ambient gain has lifted past a small dead-zone (auto-ambient
+        # asymmetric EMA already prevents flicker around the threshold).
+        night_red_active = brightness.config.night_red and (
+            not brightness.config.auto_ambient
+            or not light.status.available
+            or light.gain() < 0.2
+        )
+        if night_red_active:
             return bl, (sw * NIGHT_R, sw * NIGHT_G, sw * NIGHT_B)
         return bl, (sw, sw, sw)
 
@@ -1255,6 +1277,7 @@ def main() -> int:
         verse.stop()
         mpd.stop()
         world_map.stop()
+        light.stop()
         try:
             backlight.write(backlight.maximum)
         except Exception:
