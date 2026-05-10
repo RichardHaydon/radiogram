@@ -28,7 +28,17 @@ except Exception as _exc:
 
 PIN = 17
 DISCHARGE_S = 0.005
-TIMEOUT_COUNT = 200000
+# Reading is now wall-clock microseconds, not iteration count — the
+# old busy-loop counter was dominated by Python scheduling jitter
+# (kernel preemption during the charge cycle made counts come back
+# small even at constant illumination). perf_counter_ns measures the
+# real elapsed time, so a 5 ms kernel pause shows up as a 5 ms read,
+# not as a "fast / bright" outlier. Existing CAL DIM / CAL BRIGHT
+# values stay roughly meaningful — the busy-loop ran at ~1 us / iter
+# on this Pi, so old "counts" and new microseconds are similar in
+# magnitude — but tap the buttons again to re-anchor exactly.
+TIMEOUT_COUNT = 200_000     # 200 ms upper bound (covers no-LDR case)
+SAMPLES_PER_TICK = 5
 
 # Counts go *down* with brighter light. DIM_REF is the "no boost"
 # anchor (matches the dim-room baseline). BRIGHT_REF is the "full
@@ -45,7 +55,11 @@ TIMEOUT_COUNT = 200000
 # as "still dim" with gain pinned at exactly 0.
 DIM_REF_COUNT = 800
 BRIGHT_REF_COUNT = 50
-DEADBAND_FRAC = 0.85
+# 30 % deadband (was 15 %): per-sample noise plus the asymmetric
+# EMA's slow release would otherwise leak across the threshold and
+# pull the panel off zero in steady ambient. Wider window + cleaner
+# per-tick reads (median of N) keep the dim state genuinely stable.
+DEADBAND_FRAC = 0.70
 
 POLL_S = 0.3
 # Asymmetric smoothing: panel should lift quickly when a room light
@@ -178,20 +192,41 @@ class LightService:
             self._stop.wait(max(0.0, POLL_S - elapsed))
 
     @staticmethod
-    def _read_count() -> int:
+    def _read_one_us() -> int:
+        """One discharge/charge cycle. Returns elapsed microseconds
+        until the input crosses HIGH (or TIMEOUT_COUNT if it never
+        does within the upper bound).
+
+        Wall-clock timing rather than iteration count — Python's
+        busy-loop runs at ~1 us / iter on this Pi but is preempted
+        unpredictably by the kernel. perf_counter_ns measures the
+        *real* charge interval, so a kernel pause no longer makes
+        the reading look brighter than the actual illumination.
+        """
         # Phase 1: drain the cap by driving the pin LOW as an output.
         GPIO.setup(PIN, GPIO.OUT)
         GPIO.output(PIN, GPIO.LOW)
         time.sleep(DISCHARGE_S)
         # Phase 2: high-Z input — cap charges through the LDR.
         GPIO.setup(PIN, GPIO.IN)
-        # Phase 3: count loop iterations until the input crosses HIGH.
-        n = 0
+        # Phase 3: time the rise to HIGH using a wall-clock deadline.
+        start_ns = time.perf_counter_ns()
+        deadline_ns = start_ns + TIMEOUT_COUNT * 1000
         while GPIO.input(PIN) == GPIO.LOW:
-            n += 1
-            if n >= TIMEOUT_COUNT:
+            if time.perf_counter_ns() > deadline_ns:
                 return TIMEOUT_COUNT
-        return n
+        return max(0, (time.perf_counter_ns() - start_ns) // 1000)
+
+    @classmethod
+    def _read_count(cls) -> int:
+        """Median of SAMPLES_PER_TICK back-to-back reads. The median
+        rejects single-cycle outliers — kernel preemption during one
+        cycle, a brief shadow over the LDR, ESD blips on the GPIO —
+        without slowing the response, since all samples are taken in
+        the same tick (~30 ms total at indoor light levels)."""
+        samples = sorted(cls._read_one_us()
+                         for _ in range(SAMPLES_PER_TICK))
+        return samples[SAMPLES_PER_TICK // 2]
 
     @staticmethod
     def _gain_for(smooth_count: float,
