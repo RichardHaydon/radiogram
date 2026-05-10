@@ -98,6 +98,12 @@ BACKLIGHT_GLOB = "/sys/class/backlight/*/brightness"
 
 # --- behaviour --------------------------------------------------------
 IDLE_TIMEOUT_S = 30.0
+# Auto-return from any settings/launcher overlay back to the home
+# scene after this much idleness. Lower than IDLE_TIMEOUT_S so the
+# user lands back on the clock *before* the panel starts dimming —
+# leaving a half-finished settings overlay visible during the dim
+# transition would look broken.
+SETTINGS_TIMEOUT_S = 20.0
 FRAME_RATE = 5
 # Brightness pinning while the guided tour runs. The user's everyday
 # setting is bedside-low (often 5%); a tour at that level is invisible
@@ -540,6 +546,10 @@ class Compositor:
 
     def current_scene_name(self) -> str:
         return self._overlay or self.default_picker()
+
+    @property
+    def has_overlay(self) -> bool:
+        return self._overlay is not None
 
     # --- frame + dispatch ---------------------------------------------
 
@@ -1107,6 +1117,14 @@ def main() -> int:
     NIGHT_R = 1.00
     NIGHT_G = 0.10
     NIGHT_B = 0.04
+    # Night-red ambient hysteresis. Once gain rises past OFF the tint
+    # is suppressed; we don't re-enable until gain drops back below ON.
+    # The 0.10/0.30 gap absorbs EMA noise as the room transitions, so
+    # the panel doesn't visibly toggle tint on/off when ambient hovers
+    # right around a single threshold.
+    NIGHT_RED_OFF_GAIN = 0.30
+    NIGHT_RED_ON_GAIN = 0.10
+    night_red_ambient_off = False
 
     def _resolve(pct: int) -> tuple[int, float]:
         """Map a percent target to (backlight_level, sw_factor) using
@@ -1135,17 +1153,21 @@ def main() -> int:
         return bl, (sw, sw, sw)
 
     def idle_dim_target() -> tuple[int, tuple[float, float, float]]:
+        nonlocal night_red_ambient_off
         bl, sw = _resolve(_apply_ambient(brightness.config.dim_pct))
         # Night-red only makes sense in a dim room — in bright ambient
-        # the deep-red tint just hurts legibility. Suppress when the
-        # ambient gain has lifted past a small dead-zone (auto-ambient
-        # asymmetric EMA already prevents flicker around the threshold).
-        night_red_active = brightness.config.night_red and (
-            not brightness.config.auto_ambient
-            or not light.status.available
-            or light.gain() < 0.2
-        )
-        if night_red_active:
+        # the deep-red tint just hurts legibility. State-based
+        # hysteresis on the gain prevents the tint from flickering as
+        # ambient transitions across a single threshold.
+        if brightness.config.auto_ambient and light.status.available:
+            g = light.gain()
+            if night_red_ambient_off and g < NIGHT_RED_ON_GAIN:
+                night_red_ambient_off = False
+            elif not night_red_ambient_off and g > NIGHT_RED_OFF_GAIN:
+                night_red_ambient_off = True
+        else:
+            night_red_ambient_off = False
+        if brightness.config.night_red and not night_red_ambient_off:
             return bl, (sw * NIGHT_R, sw * NIGHT_G, sw * NIGHT_B)
         return bl, (sw, sw, sw)
 
@@ -1202,6 +1224,15 @@ def main() -> int:
                     compositor.dispatch_tap(ev.cx, ev.cy)
                 elif ev.kind == "swipe":
                     compositor.dispatch_swipe(ev.direction, ev.cx, ev.cy)
+
+            # Auto-return from any settings/launcher overlay to the
+            # home scene after SETTINGS_TIMEOUT_S of idleness. Demo
+            # is exempted — the tour itself drives set_overlay() each
+            # step and would fight a clear from underneath.
+            if (compositor.has_overlay
+                    and not demo.is_active
+                    and time.monotonic() - last_input_t > SETTINGS_TIMEOUT_S):
+                compositor.clear_overlay()
 
             if demo.is_active:
                 # Tour overrides everything: pin the panel to a
