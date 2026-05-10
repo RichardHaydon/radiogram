@@ -33,13 +33,13 @@ TIMEOUT_COUNT = 200000
 # Counts go *down* with brighter light. DIM_REF is the "no boost" anchor
 # (matches the room the user calibrated their brightness setting in);
 # BRIGHT_REF is the "full boost" anchor (clamps to 100%). Calibrated
-# against the user's actual bedside ambient — ~73k counts in a dimly-
-# lit room — so the user's setting is honoured exactly at and below
-# that level, with boost ramping in only when the room becomes
-# noticeably brighter than that. BRIGHT_REF=500 saturates near typical
-# room-lit indoor levels.
-DIM_REF_COUNT = 75000
-BRIGHT_REF_COUNT = 500
+# against the actual sensor in its bedside mounting — ~750 counts in
+# the dim ambient the user calibrated their brightness setting for,
+# saturating near 50 counts under direct light. The dynamic range is
+# narrower than the original mounting because the sensor was repinned
+# / repositioned, so DIM/BRIGHT sit much closer than before.
+DIM_REF_COUNT = 800
+BRIGHT_REF_COUNT = 50
 
 POLL_S = 0.3
 # Asymmetric smoothing: panel should lift quickly when a room light
