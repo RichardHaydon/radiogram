@@ -839,9 +839,11 @@ def main() -> int:
     brightness = BrightnessService(BRIGHTNESS_PATH)
     print(f"brightness: active={brightness.config.active_pct}% "
           f"dim={brightness.config.dim_pct}% "
-          f"auto_ambient={brightness.config.auto_ambient}", flush=True)
+          f"auto_ambient={brightness.config.auto_ambient} "
+          f"light_dim_ref={brightness.config.light_dim_ref}", flush=True)
 
-    light = LightService()
+    light = LightService(
+        get_dim_ref=lambda: brightness.config.light_dim_ref)
     light.start()
 
     background = BackgroundService(BACKGROUND_PATH)
@@ -1061,6 +1063,7 @@ def main() -> int:
     scenes["brightness"] = BrightnessScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, brightness_service=brightness,
+        light_service=light,
     )
     scenes["about"] = AboutScene(
         theme, display.canvas_w, display.canvas_h,

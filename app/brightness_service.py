@@ -7,6 +7,7 @@ changes (kernel update, hardware swap). Pure data — the main loop reads
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from dataclasses import dataclass
@@ -27,6 +28,14 @@ ACTIVE_LEVELS: tuple[int, ...] = (
 )
 DIM_LEVELS: tuple[int, ...] = (0, 1, 2, 3, 5, 8, 12, 18, 25, 35, 50)
 
+# Sensible bounds when the user calibrates the light sensor. A captured
+# count below 10 would clamp the boost ramp to a near-zero range and
+# make every read look "bright"; above 200000 is the LDR/photodiode
+# timeout sentinel and would flatline the gain at zero.
+LIGHT_DIM_REF_MIN = 10
+LIGHT_DIM_REF_MAX = 199000
+LIGHT_DIM_REF_DEFAULT = 800
+
 
 @dataclass(frozen=True)
 class BrightnessConfig:
@@ -43,6 +52,12 @@ class BrightnessConfig:
     # brighter, the LightService gain lifts the panel toward 100%.
     # Default ON — the feature is the whole point of the sensor.
     auto_ambient: bool = True
+    # Sensor calibration: the count value that should mean "no boost"
+    # (the dim-room baseline). User adjusts this from BrightnessScene
+    # via a Calibrate button that captures the current smoothed count
+    # — a one-tap re-cal whenever the sensor is moved or the room's
+    # daytime/nighttime baseline changes. BRIGHT_REF derives at /16.
+    light_dim_ref: int = LIGHT_DIM_REF_DEFAULT
 
 
 class BrightnessService:
@@ -60,6 +75,8 @@ class BrightnessService:
                 dim_pct=_snap(int(d.get("dim_pct", 5)), DIM_LEVELS),
                 night_red=bool(d.get("night_red", False)),
                 auto_ambient=bool(d.get("auto_ambient", True)),
+                light_dim_ref=_clamp_dim_ref(
+                    int(d.get("light_dim_ref", LIGHT_DIM_REF_DEFAULT))),
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return BrightnessConfig()
@@ -68,7 +85,8 @@ class BrightnessService:
         d = {"active_pct": self._cfg.active_pct,
              "dim_pct": self._cfg.dim_pct,
              "night_red": self._cfg.night_red,
-             "auto_ambient": self._cfg.auto_ambient}
+             "auto_ambient": self._cfg.auto_ambient,
+             "light_dim_ref": self._cfg.light_dim_ref}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(d, indent=2))
         os.replace(tmp, self.path)
@@ -80,46 +98,55 @@ class BrightnessService:
     def step_active(self, direction: int) -> None:
         new = _step(self._cfg.active_pct, direction, ACTIVE_LEVELS)
         if new != self._cfg.active_pct:
-            self._cfg = BrightnessConfig(
-                active_pct=new, dim_pct=self._cfg.dim_pct,
-                night_red=self._cfg.night_red,
-                auto_ambient=self._cfg.auto_ambient)
+            self._cfg = dataclasses.replace(self._cfg, active_pct=new)
             self._save()
 
     def step_dim(self, direction: int) -> None:
         new = _step(self._cfg.dim_pct, direction, DIM_LEVELS)
         if new != self._cfg.dim_pct:
-            self._cfg = BrightnessConfig(
-                active_pct=self._cfg.active_pct, dim_pct=new,
-                night_red=self._cfg.night_red,
-                auto_ambient=self._cfg.auto_ambient)
+            self._cfg = dataclasses.replace(self._cfg, dim_pct=new)
             self._save()
 
     def toggle_night_red(self) -> bool:
-        self._cfg = BrightnessConfig(
-            active_pct=self._cfg.active_pct,
-            dim_pct=self._cfg.dim_pct,
-            night_red=not self._cfg.night_red,
-            auto_ambient=self._cfg.auto_ambient,
-        )
+        self._cfg = dataclasses.replace(
+            self._cfg, night_red=not self._cfg.night_red)
         self._save()
         return self._cfg.night_red
 
     def toggle_auto_ambient(self) -> bool:
-        self._cfg = BrightnessConfig(
-            active_pct=self._cfg.active_pct,
-            dim_pct=self._cfg.dim_pct,
-            night_red=self._cfg.night_red,
-            auto_ambient=not self._cfg.auto_ambient,
-        )
+        self._cfg = dataclasses.replace(
+            self._cfg, auto_ambient=not self._cfg.auto_ambient)
         self._save()
         return self._cfg.auto_ambient
+
+    def set_light_dim_ref(self, value: int) -> int:
+        """Capture a calibration sample as the new dim-room anchor.
+
+        Caller should pass the current smoothed sensor count (from
+        LightService.status.smooth_count). Out-of-range or zero values
+        are ignored — a zero often just means the sensor hasn't
+        produced a usable reading yet."""
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            return self._cfg.light_dim_ref
+        if v <= 0:
+            return self._cfg.light_dim_ref
+        v = _clamp_dim_ref(v)
+        if v != self._cfg.light_dim_ref:
+            self._cfg = dataclasses.replace(self._cfg, light_dim_ref=v)
+            self._save()
+        return self._cfg.light_dim_ref
 
 
 def _snap(v: int, levels: tuple[int, ...]) -> int:
     """Closest allowed level — used when loading config that may have
     been written under an older ladder."""
     return min(levels, key=lambda lv: abs(lv - v))
+
+
+def _clamp_dim_ref(v: int) -> int:
+    return max(LIGHT_DIM_REF_MIN, min(LIGHT_DIM_REF_MAX, int(v)))
 
 
 def _step(current: int, direction: int, levels: tuple[int, ...]) -> int:

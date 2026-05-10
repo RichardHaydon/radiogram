@@ -14,7 +14,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import RPi.GPIO as GPIO  # type: ignore
@@ -31,15 +31,17 @@ DISCHARGE_S = 0.005
 TIMEOUT_COUNT = 200000
 
 # Counts go *down* with brighter light. DIM_REF is the "no boost" anchor
-# (matches the room the user calibrated their brightness setting in);
-# BRIGHT_REF is the "full boost" anchor (clamps to 100%). Calibrated
-# against the actual sensor in its bedside mounting — ~750 counts in
-# the dim ambient the user calibrated their brightness setting for,
-# saturating near 50 counts under direct light. The dynamic range is
-# narrower than the original mounting because the sensor was repinned
-# / repositioned, so DIM/BRIGHT sit much closer than before.
+# (matches the dim-room baseline the user calibrated their brightness
+# setting for). BRIGHT_REF (the "full boost" anchor) auto-derives as
+# DIM_REF/BRIGHT_REF_RATIO — keeps the boost ramp shape consistent
+# whatever sensor / mounting the user calibrates against.
+#
+# DIM_REF_COUNT below is the fallback if no callable is provided to
+# LightService — the live runtime gets the value from BrightnessConfig
+# so the user's Calibrate button updates the sensor's response curve
+# without a service restart.
 DIM_REF_COUNT = 800
-BRIGHT_REF_COUNT = 50
+BRIGHT_REF_RATIO = 16
 
 POLL_S = 0.3
 # Asymmetric smoothing: panel should lift quickly when a room light
@@ -63,13 +65,18 @@ class LightStatus:
 
 
 class LightService:
-    def __init__(self) -> None:
+    def __init__(self,
+                 get_dim_ref: Optional[Callable[[], int]] = None) -> None:
         self._lock = threading.Lock()
         self._status = LightStatus()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._fail_streak = 0
         self._outage_logged = False
+        # Callable so the calibration is hot — the user's Calibrate
+        # button writes BrightnessConfig.light_dim_ref, and the next
+        # sample read here picks up the new anchor without a restart.
+        self._get_dim_ref = get_dim_ref or (lambda: DIM_REF_COUNT)
 
     @property
     def status(self) -> LightStatus:
@@ -140,7 +147,7 @@ class LightService:
                 else:
                     a = alpha_attack if count < smooth else alpha_release
                     smooth += a * (count - smooth)
-                gain = self._gain_for(smooth)
+                gain = self._gain_for(smooth, self._get_dim_ref())
             else:
                 smooth = None
                 gain = 0.0
@@ -179,13 +186,17 @@ class LightService:
         return n
 
     @staticmethod
-    def _gain_for(smooth_count: float) -> float:
+    def _gain_for(smooth_count: float, dim_ref: int) -> float:
         # Linear in 1/count, which scales roughly with illuminance.
+        # bright_ref auto-derives from dim_ref so a single user
+        # calibration sample is enough — see BRIGHT_REF_RATIO.
         if smooth_count <= 0:
             return 1.0
+        dim_ref = max(1, int(dim_ref))
+        bright_ref = max(1, dim_ref // BRIGHT_REF_RATIO)
         x = 1.0 / smooth_count
-        x_dim = 1.0 / DIM_REF_COUNT
-        x_brt = 1.0 / BRIGHT_REF_COUNT
+        x_dim = 1.0 / dim_ref
+        x_brt = 1.0 / bright_ref
         if x_brt <= x_dim:
             return 0.0
         gain = (x - x_dim) / (x_brt - x_dim)

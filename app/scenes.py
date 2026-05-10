@@ -3428,9 +3428,10 @@ class BrightnessScene(Scene):
     the next boot keeps the user's preference."""
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
-                 compositor, brightness_service):
+                 compositor, brightness_service, light_service=None):
         super().__init__(theme, canvas_w, canvas_h)
         self._svc = brightness_service
+        self._light = light_service
         head_h = int(canvas_h * 0.14)
         self.add(_back_button(
             canvas_w, head_h,
@@ -3466,22 +3467,32 @@ class BrightnessScene(Scene):
             minus=lambda: self._svc.step_dim(-1),
             plus=lambda: self._svc.step_dim(+1),
         )
-        # Two stacked toggles in the third band: auto-ambient on top
-        # (the everyday lift-with-room-light behaviour), night-red
-        # below (the deep-red bedside tint that preserves dark
-        # adaptation when the panel is glanced at in the dark).
+        # Third band holds three rows: auto-ambient toggle paired
+        # side-by-side with a Calibrate button (capture current
+        # ambient as the dim-room anchor — needed when the sensor is
+        # moved or the room's dim baseline changes), then night-red
+        # toggle as a full-width row below.
         toggles_y = body_top + 2 * band_h + int(body_h * 0.06)
         toggles_total_h = band_h - int(body_h * 0.02)
         gap = int(body_h * 0.02)
         toggle_h = (toggles_total_h - gap) // 2
+        # Row A: auto-ambient (left ~50%) + Calibrate button (right ~30%).
         self.add(CheckboxRow(
             Rect(int(canvas_w * 0.10), toggles_y,
-                 int(canvas_w * 0.80), toggle_h),
+                 int(canvas_w * 0.50), toggle_h),
             label_src=lambda: _t("brightness.auto_ambient"),
             is_on_src=lambda: self._svc.config.auto_ambient,
             on_press=lambda: self._svc.toggle_auto_ambient(),
             font_factor=0.40,
         ))
+        self.add(Button(
+            Rect(int(canvas_w * 0.62), toggles_y,
+                 int(canvas_w * 0.28), toggle_h),
+            label_src=lambda: _t("button.calibrate"),
+            on_press=self._calibrate,
+            font_factor=0.36,
+        ))
+        # Row B: night-red toggle (full width).
         self.add(CheckboxRow(
             Rect(int(canvas_w * 0.10), toggles_y + toggle_h + gap,
                  int(canvas_w * 0.80), toggle_h),
@@ -3490,6 +3501,18 @@ class BrightnessScene(Scene):
             on_press=lambda: self._svc.toggle_night_red(),
             font_factor=0.40,
         ))
+
+    def _calibrate(self) -> None:
+        # Capture the current smoothed sensor count as the new dim-room
+        # anchor. No-op if the sensor isn't producing usable readings;
+        # BrightnessService validates and clamps the value before
+        # persisting it.
+        if self._light is None:
+            return
+        st = self._light.status
+        if not st.available:
+            return
+        self._svc.set_light_dim_ref(int(st.smooth_count))
 
     def _build_setting(self, *, label_key: str, band_y: int, band_h: int,
                        value_fn, minus, plus) -> None:
