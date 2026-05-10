@@ -3467,52 +3467,69 @@ class BrightnessScene(Scene):
             minus=lambda: self._svc.step_dim(-1),
             plus=lambda: self._svc.step_dim(+1),
         )
-        # Third band holds three rows: auto-ambient toggle paired
-        # side-by-side with a Calibrate button (capture current
-        # ambient as the dim-room anchor — needed when the sensor is
-        # moved or the room's dim baseline changes), then night-red
-        # toggle as a full-width row below.
-        toggles_y = body_top + 2 * band_h + int(body_h * 0.06)
+        # Third band holds three rows: auto-ambient toggle on top,
+        # CAL DIM | CAL BRIGHT side-by-side in the middle, night-red
+        # toggle on the bottom. Each calibrate button's label shows
+        # the live captured count so the user always sees what's in
+        # effect; tapping captures the current smoothed sample.
+        toggles_y = body_top + 2 * band_h + int(body_h * 0.04)
         toggles_total_h = band_h - int(body_h * 0.02)
-        gap = int(body_h * 0.02)
-        toggle_h = (toggles_total_h - gap) // 2
-        # Row A: auto-ambient (left ~50%) + Calibrate button (right ~30%).
+        gap = int(body_h * 0.012)
+        row_h = (toggles_total_h - 2 * gap) // 3
+        # Row A: auto-ambient toggle (full width).
         self.add(CheckboxRow(
             Rect(int(canvas_w * 0.10), toggles_y,
-                 int(canvas_w * 0.50), toggle_h),
+                 int(canvas_w * 0.80), row_h),
             label_src=lambda: _t("brightness.auto_ambient"),
             is_on_src=lambda: self._svc.config.auto_ambient,
             on_press=lambda: self._svc.toggle_auto_ambient(),
             font_factor=0.40,
         ))
+        # Row B: CAL DIM | CAL BRIGHT (each ~38% width with a gap).
+        cal_y = toggles_y + row_h + gap
+        cal_left_x = int(canvas_w * 0.10)
+        cal_w = int(canvas_w * 0.38)
+        cal_right_x = int(canvas_w * 0.52)
         self.add(Button(
-            Rect(int(canvas_w * 0.62), toggles_y,
-                 int(canvas_w * 0.28), toggle_h),
-            label_src=lambda: _t("button.calibrate"),
-            on_press=self._calibrate,
+            Rect(cal_left_x, cal_y, cal_w, row_h),
+            label_src=lambda: _t(
+                "button.cal_dim", value=self._svc.config.light_dim_ref),
+            on_press=self._calibrate_dim,
             font_factor=0.36,
         ))
-        # Row B: night-red toggle (full width).
+        self.add(Button(
+            Rect(cal_right_x, cal_y, cal_w, row_h),
+            label_src=lambda: _t(
+                "button.cal_bright",
+                value=self._svc.config.light_bright_ref),
+            on_press=self._calibrate_bright,
+            font_factor=0.36,
+        ))
+        # Row C: night-red toggle (full width).
         self.add(CheckboxRow(
-            Rect(int(canvas_w * 0.10), toggles_y + toggle_h + gap,
-                 int(canvas_w * 0.80), toggle_h),
+            Rect(int(canvas_w * 0.10), cal_y + row_h + gap,
+                 int(canvas_w * 0.80), row_h),
             label_src=lambda: _t("brightness.night_red"),
             is_on_src=lambda: self._svc.config.night_red,
             on_press=lambda: self._svc.toggle_night_red(),
             font_factor=0.40,
         ))
 
-    def _calibrate(self) -> None:
-        # Capture the current smoothed sensor count as the new dim-room
-        # anchor. No-op if the sensor isn't producing usable readings;
-        # BrightnessService validates and clamps the value before
-        # persisting it.
+    def _calibrate_dim(self) -> None:
         if self._light is None:
             return
         st = self._light.status
         if not st.available:
             return
         self._svc.set_light_dim_ref(int(st.smooth_count))
+
+    def _calibrate_bright(self) -> None:
+        if self._light is None:
+            return
+        st = self._light.status
+        if not st.available:
+            return
+        self._svc.set_light_bright_ref(int(st.smooth_count))
 
     def _build_setting(self, *, label_key: str, band_y: int, band_h: int,
                        value_fn, minus, plus) -> None:

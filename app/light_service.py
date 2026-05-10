@@ -30,18 +30,22 @@ PIN = 17
 DISCHARGE_S = 0.005
 TIMEOUT_COUNT = 200000
 
-# Counts go *down* with brighter light. DIM_REF is the "no boost" anchor
-# (matches the dim-room baseline the user calibrated their brightness
-# setting for). BRIGHT_REF (the "full boost" anchor) auto-derives as
-# DIM_REF/BRIGHT_REF_RATIO — keeps the boost ramp shape consistent
-# whatever sensor / mounting the user calibrates against.
+# Counts go *down* with brighter light. DIM_REF is the "no boost"
+# anchor (matches the dim-room baseline). BRIGHT_REF is the "full
+# boost" anchor (clamps to 100 %). Both come from BrightnessConfig
+# at runtime via the callables passed to the service — the user
+# tunes them via CAL DIM / CAL BRIGHT in BrightnessScene.
 #
-# DIM_REF_COUNT below is the fallback if no callable is provided to
-# LightService — the live runtime gets the value from BrightnessConfig
-# so the user's Calibrate button updates the sensor's response curve
-# without a service restart.
+# DEADBAND_FRAC is the fraction of DIM_REF below which the boost
+# ramp begins. Sensor noise typically swings counts by a few percent
+# per sample; without a deadband, samples bouncing across DIM_REF
+# would constantly nudge the gain off zero (and the asymmetric EMA
+# release would hold each blip for several seconds). 0.85 leaves a
+# 15 % margin: anything within 15 % of the dim anchor is honoured
+# as "still dim" with gain pinned at exactly 0.
 DIM_REF_COUNT = 800
-BRIGHT_REF_RATIO = 16
+BRIGHT_REF_COUNT = 50
+DEADBAND_FRAC = 0.85
 
 POLL_S = 0.3
 # Asymmetric smoothing: panel should lift quickly when a room light
@@ -66,17 +70,20 @@ class LightStatus:
 
 class LightService:
     def __init__(self,
-                 get_dim_ref: Optional[Callable[[], int]] = None) -> None:
+                 get_dim_ref: Optional[Callable[[], int]] = None,
+                 get_bright_ref: Optional[Callable[[], int]] = None) -> None:
         self._lock = threading.Lock()
         self._status = LightStatus()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._fail_streak = 0
         self._outage_logged = False
-        # Callable so the calibration is hot — the user's Calibrate
-        # button writes BrightnessConfig.light_dim_ref, and the next
-        # sample read here picks up the new anchor without a restart.
+        # Callables so the calibration is hot — the user's CAL DIM /
+        # CAL BRIGHT buttons write BrightnessConfig, and the next
+        # sample picks up the new anchors without a service restart.
         self._get_dim_ref = get_dim_ref or (lambda: DIM_REF_COUNT)
+        self._get_bright_ref = (
+            get_bright_ref or (lambda: BRIGHT_REF_COUNT))
 
     @property
     def status(self) -> LightStatus:
@@ -147,7 +154,8 @@ class LightService:
                 else:
                     a = alpha_attack if count < smooth else alpha_release
                     smooth += a * (count - smooth)
-                gain = self._gain_for(smooth, self._get_dim_ref())
+                gain = self._gain_for(
+                    smooth, self._get_dim_ref(), self._get_bright_ref())
             else:
                 smooth = None
                 gain = 0.0
@@ -186,16 +194,26 @@ class LightService:
         return n
 
     @staticmethod
-    def _gain_for(smooth_count: float, dim_ref: int) -> float:
+    def _gain_for(smooth_count: float,
+                  dim_ref: int, bright_ref: int) -> float:
         # Linear in 1/count, which scales roughly with illuminance.
-        # bright_ref auto-derives from dim_ref so a single user
-        # calibration sample is enough — see BRIGHT_REF_RATIO.
+        # The dim-side ramp begins at DEADBAND_FRAC * dim_ref, not at
+        # dim_ref itself — sensor noise around the threshold would
+        # otherwise constantly nudge the gain just above zero and
+        # cause visible level-stepping in steady ambient.
         if smooth_count <= 0:
             return 1.0
         dim_ref = max(1, int(dim_ref))
-        bright_ref = max(1, dim_ref // BRIGHT_REF_RATIO)
+        bright_ref = max(1, int(bright_ref))
+        if bright_ref >= dim_ref:
+            # Invalid configuration (user set bright above dim); refuse
+            # to boost rather than emit a nonsense ramp.
+            return 0.0
+        deadband_threshold = dim_ref * DEADBAND_FRAC
+        if smooth_count >= deadband_threshold:
+            return 0.0
         x = 1.0 / smooth_count
-        x_dim = 1.0 / dim_ref
+        x_dim = 1.0 / deadband_threshold
         x_brt = 1.0 / bright_ref
         if x_brt <= x_dim:
             return 0.0

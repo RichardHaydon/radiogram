@@ -840,10 +840,13 @@ def main() -> int:
     print(f"brightness: active={brightness.config.active_pct}% "
           f"dim={brightness.config.dim_pct}% "
           f"auto_ambient={brightness.config.auto_ambient} "
-          f"light_dim_ref={brightness.config.light_dim_ref}", flush=True)
+          f"dim_ref={brightness.config.light_dim_ref} "
+          f"bright_ref={brightness.config.light_bright_ref}",
+          flush=True)
 
     light = LightService(
-        get_dim_ref=lambda: brightness.config.light_dim_ref)
+        get_dim_ref=lambda: brightness.config.light_dim_ref,
+        get_bright_ref=lambda: brightness.config.light_bright_ref)
     light.start()
 
     background = BackgroundService(BACKGROUND_PATH)
