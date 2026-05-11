@@ -1,0 +1,22 @@
+[Unit]
+Description=Auto-configure MPD audio_output for the current DAC
+# Run before MPD so the daemon never sees stale hw:CARD= references
+# pointing at a card the user has unplugged. ALSA enumerates USB
+# audio devices during early boot via systemd-modules-load, so by
+# the time we land here /proc/asound/cards is already populated.
+After=systemd-modules-load.service
+Before=mpd.service
+ConditionPathExists=/etc/mpd.conf
+
+[Service]
+Type=oneshot
+# Exit code 10 from the helper means "config rewritten" — bounce
+# mpd so the change takes effect. Exit code 0 means "nothing to
+# do" and we leave mpd alone (next dependant unit fires normally).
+SuccessExitStatus=0 10
+ExecStart=/usr/local/sbin/clockradio-mpd-autoconfig
+ExecStartPost=/bin/sh -c 'test $EXIT_STATUS = 10 && systemctl try-restart mpd || true'
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

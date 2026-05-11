@@ -84,6 +84,20 @@ systemctl daemon-reload
 systemctl disable getty@tty1.service 2>/dev/null || true
 systemctl enable clockradio.service
 
+echo "==> 7a/9  MPD auto-config helper (USB DAC self-healing)"
+# Re-derives /etc/mpd.conf's audio_output stanza on every boot from the
+# live ALSA card name + mixer control. A different USB DAC plugged in
+# next boot will have a different card-name string ("Device" for
+# C-Media, "Audio" for Realtek, etc.) — without this, MPD would fail
+# to open hw:CARD=<previous_name> and the radio would be silent.
+install -m 0755 -o root -g root \
+    "$SRC_DIR/setup/mpd-autoconfig" \
+    /usr/local/sbin/clockradio-mpd-autoconfig
+install -m 0644 "$SRC_DIR/systemd/clockradio-mpd-autoconfig.service" \
+    /etc/systemd/system/clockradio-mpd-autoconfig.service
+systemctl daemon-reload
+systemctl enable clockradio-mpd-autoconfig.service
+
 echo "==> 7/9  Bluetooth helper + pair-accept agent"
 # Privileged shim that BluetoothService shells out to via `sudo -n`.
 # Adds/removes the bluealsa MPD output block + retargets bluealsa-aplay

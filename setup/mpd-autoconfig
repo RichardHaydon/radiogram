@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Auto-configure MPD's audio_output for the currently-attached DAC.
+
+Detects which non-onboard playback card is present (USB DAC, I2S
+HAT, whatever) by walking /proc/asound/cards, picks a sensible
+hardware mixer on that card, and rewrites the audio_output stanza
+in /etc/mpd.conf to match. Idempotent — only touches the file when
+the existing stanza would differ from what should be there.
+
+Why this exists: ALSA card names are baked into mpd.conf as
+hw:CARD=<name>, and the name comes from the USB device descriptor.
+Different DACs report different names (C-Media → "Device",
+Realtek → "Audio") and different mixer controls (PCM, Speaker, …).
+A DAC swap previously meant manually editing mpd.conf and bouncing
+the daemon. This helper makes the swap self-healing on boot.
+
+Designed to run from a systemd unit ordered Before=mpd.service so
+the live MPD instance always sees a config that matches the live
+hardware. The unit restarts MPD if (and only if) the file changed.
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+MPD_CONF = Path("/etc/mpd.conf")
+# Pi onboard / HDMI outputs we deliberately skip — we want to find
+# the user-added USB DAC or I2S HAT, not fall back to the 3.5 mm jack
+# (clicky, no audible output on the Pi 3) or HDMI (no speakers wired).
+ONBOARD_CARDS = ("Headphones", "vc4hdmi", "bcm2835")
+# Preferred mixer names in priority order. Different chips expose
+# different mixer-control labels — we look for a known good one
+# first, then fall back to any control that has a Playback channel.
+PREFERRED_MIXERS = ("PCM", "Speaker", "Master", "Headphone")
+
+
+def list_playback_cards() -> list[tuple[int, str]]:
+    """Returns [(index, name), ...] from /proc/asound/cards. The name
+    is what shows up in hw:CARD=<name> (the symbolic short id, e.g.
+    'Audio' for the Realtek USB DAC)."""
+    cards: list[tuple[int, str]] = []
+    try:
+        text = Path("/proc/asound/cards").read_text()
+    except OSError:
+        return cards
+    for line in text.splitlines():
+        m = re.match(r"\s*(\d+)\s+\[([^\]]+?)\s*\]:", line)
+        if m:
+            cards.append((int(m.group(1)), m.group(2)))
+    return cards
+
+
+def pick_target_card() -> tuple[int, str] | None:
+    """Return the first non-onboard playback card, or None if there
+    isn't one. We deliberately don't fall back to the onboard
+    Headphones jack — sending audio there would be silently broken on
+    a system the user provisioned to use an external DAC."""
+    for idx, name in list_playback_cards():
+        if any(name == oc or name.startswith(oc) for oc in ONBOARD_CARDS):
+            continue
+        return idx, name
+    return None
+
+
+def amixer(card: str, *args: str) -> str:
+    """Run amixer with -c <card> and capture stdout. Empty string on
+    any failure — callers treat empty as 'unknown / not present'."""
+    try:
+        return subprocess.check_output(
+            ["amixer", "-c", card, *args],
+            text=True, stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return ""
+
+
+def list_mixers(card: str) -> list[str]:
+    out = amixer(card, "scontrols")
+    return re.findall(r"'([^']+)'", out)
+
+
+def has_playback(card: str, mixer: str) -> bool:
+    return "Playback" in amixer(card, "sget", mixer)
+
+
+def pick_mixer(card: str) -> str | None:
+    mixers = list_mixers(card)
+    for pref in PREFERRED_MIXERS:
+        if pref in mixers and has_playback(card, pref):
+            return pref
+    # Some cards expose only non-standard names — accept any control
+    # that has a Playback channel rather than giving up.
+    for m in mixers:
+        if has_playback(card, m):
+            return m
+    return None
+
+
+def render_block(card: str, mixer: str) -> str:
+    return (
+        'audio_output {\n'
+        '    type            "alsa"\n'
+        '    name            "Clockradio Output"\n'
+        f'    device          "hw:CARD={card},DEV=0"\n'
+        '    mixer_type      "hardware"\n'
+        f'    mixer_device    "hw:CARD={card}"\n'
+        f'    mixer_control   "{mixer}"\n'
+        '    mixer_index     "0"\n'
+        '}'
+    )
+
+
+def replace_audio_output(text: str, new_block: str) -> str:
+    """Replace the first audio_output { ... } stanza, or append one
+    if none exists. The non-greedy [^}]* match is safe because mpd.conf
+    blocks don't nest curly braces."""
+    pat = re.compile(r"audio_output\s*\{[^}]*\}", re.S)
+    if pat.search(text):
+        return pat.sub(new_block.replace("\\", "\\\\"), text, count=1)
+    return text.rstrip() + "\n\n" + new_block + "\n"
+
+
+def main() -> int:
+    card = pick_target_card()
+    if card is None:
+        print("mpd-autoconfig: no external playback card present; "
+              "leaving mpd.conf alone", file=sys.stderr)
+        return 0
+    _idx, card_name = card
+    mixer = pick_mixer(card_name)
+    if mixer is None:
+        print(f"mpd-autoconfig: no usable mixer on card '{card_name}'; "
+              "leaving mpd.conf alone", file=sys.stderr)
+        return 0
+
+    try:
+        current = MPD_CONF.read_text()
+    except FileNotFoundError:
+        print(f"mpd-autoconfig: {MPD_CONF} not found", file=sys.stderr)
+        return 2
+
+    new_block = render_block(card_name, mixer)
+    rewritten = replace_audio_output(current, new_block)
+    if rewritten == current:
+        print(f"mpd-autoconfig: already configured for card='{card_name}' "
+              f"mixer='{mixer}'")
+        return 0
+
+    tmp = MPD_CONF.with_suffix(".autoconfig.tmp")
+    tmp.write_text(rewritten)
+    tmp.chmod(0o644)
+    tmp.replace(MPD_CONF)
+    print(f"mpd-autoconfig: rewrote audio_output for card='{card_name}' "
+          f"mixer='{mixer}' (mpd restart recommended)")
+    # Exit code 10 signals "config changed" so the systemd unit (or a
+    # caller wrapper) can decide to restart mpd. 0 means "no change".
+    return 10
+
+
+if __name__ == "__main__":
+    sys.exit(main())
