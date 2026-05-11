@@ -1128,14 +1128,6 @@ def main() -> int:
     NIGHT_R = 1.00
     NIGHT_G = 0.10
     NIGHT_B = 0.04
-    # Night-red ambient hysteresis. Once gain rises past OFF the tint
-    # is suppressed; we don't re-enable until gain drops back below ON.
-    # The 0.10/0.30 gap absorbs EMA noise as the room transitions, so
-    # the panel doesn't visibly toggle tint on/off when ambient hovers
-    # right around a single threshold.
-    NIGHT_RED_OFF_GAIN = 0.30
-    NIGHT_RED_ON_GAIN = 0.10
-    night_red_ambient_off = False
 
     def _resolve(pct: int) -> tuple[int, float]:
         """Map a percent target to (backlight_level, sw_factor) using
@@ -1164,21 +1156,13 @@ def main() -> int:
         return bl, (sw, sw, sw)
 
     def idle_dim_target() -> tuple[int, tuple[float, float, float]]:
-        nonlocal night_red_ambient_off
         bl, sw = _resolve(_apply_ambient(brightness.config.dim_pct))
-        # Night-red only makes sense in a dim room — in bright ambient
-        # the deep-red tint just hurts legibility. State-based
-        # hysteresis on the gain prevents the tint from flickering as
-        # ambient transitions across a single threshold.
-        if brightness.config.auto_ambient and light.status.available:
-            g = light.gain()
-            if night_red_ambient_off and g < NIGHT_RED_ON_GAIN:
-                night_red_ambient_off = False
-            elif not night_red_ambient_off and g > NIGHT_RED_OFF_GAIN:
-                night_red_ambient_off = True
-        else:
-            night_red_ambient_off = False
-        if brightness.config.night_red and not night_red_ambient_off:
+        # Night-red tint applies whenever the toggle is on and we're
+        # in the idle/dim mode — independent of ambient brightness.
+        # The deep red is restful at a glance regardless of room
+        # light, so the previous ambient-suppression hysteresis has
+        # been dropped.
+        if brightness.config.night_red:
             return bl, (sw * NIGHT_R, sw * NIGHT_G, sw * NIGHT_B)
         return bl, (sw, sw, sw)
 
