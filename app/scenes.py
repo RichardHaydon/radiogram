@@ -73,6 +73,17 @@ class Scene:
         self.widgets.append(w)
         return w
 
+    def inhibit_auto_exit(self) -> bool:
+        """Return True to suppress the settings auto-exit timeout.
+
+        Scenes that are running a finite, user-perceptible operation
+        (BT pairing countdown, WifiPasswordScene mid-typing, etc.)
+        override this so the main loop doesn't whip the user back to
+        the home screen mid-task. Default: no inhibition — the scene
+        is consider abandoned after SETTINGS_TIMEOUT_S of inactivity.
+        """
+        return False
+
     def state_key(self) -> tuple:
         base = tuple(w.state_key() for w in self.widgets)
         # Fold the i18n version into every scene's key so a language
@@ -700,26 +711,36 @@ class BluetoothPlayingScene(Scene):
         )
         self.add(self._clock)
 
-        # Streaming-source band: subtitle + big phone name. Sits between
-        # the clock and the action footer.
+        # Now-playing band: subtitle (where it's from) + headline
+        # (track title or app name) + caption (artist or phone name).
+        # AVRCP metadata replaces the fallbacks whenever the phone
+        # reports it — YouTube and many casting apps don't bother,
+        # but Spotify / Apple Music / Tidal do, so we get real
+        # track info when it's available.
         np_y = clock_h
         np_h = body_h - clock_h
-        sub_h = int(np_h * 0.30)
-        name_h = int(np_h * 0.50)
+        sub_h = int(np_h * 0.20)
+        title_h = int(np_h * 0.40)
+        artist_h = int(np_h * 0.25)
         self.add(TextWidget(
             Rect(0, np_y, canvas_w, sub_h),
-            text_src=lambda: _t("bluetooth.home.from_phone"),
+            text_src=lambda: self._subtitle_text(),
             font_role="regular",
-            font_factor=0.50,
+            font_factor=0.45,
             color_role="fg_subtle",
         ))
         self.add(TextWidget(
-            Rect(0, np_y + sub_h, canvas_w, name_h),
-            text_src=lambda: (self._bt.status.streaming_from
-                              or self._bt.status.connected_phone
-                              or _t("bluetooth.unknown_name")),
-            font_factor=0.65,
+            Rect(0, np_y + sub_h, canvas_w, title_h),
+            text_src=lambda: self._title_text(),
+            font_factor=0.60,
             color_role="fg_accent",
+        ))
+        self.add(TextWidget(
+            Rect(0, np_y + sub_h + title_h, canvas_w, artist_h),
+            text_src=lambda: self._artist_text(),
+            font_role="regular",
+            font_factor=0.50,
+            color_role="fg_subtle",
         ))
 
         # Footer: alarm pill (same as IdleScene) + BT transport
@@ -753,6 +774,42 @@ class BluetoothPlayingScene(Scene):
         RadioScene so the gesture is the same on every home variant."""
         self._compositor.set_overlay("launcher")
         return True
+
+    # --- now-playing text resolution ---------------------------------
+
+    def _phone_name(self) -> str:
+        st = self._bt.status
+        return (st.streaming_from or st.connected_phone
+                or _t("bluetooth.unknown_name"))
+
+    def _subtitle_text(self) -> str:
+        # If we have an app name from AVRCP, show "from <phone> via
+        # <app>" — gives the user both pieces of context. Otherwise
+        # fall back to the static "FROM YOUR PHONE" subtitle.
+        st = self._bt.status
+        if st.media_app:
+            return _t("bluetooth.home.from_phone_app",
+                      phone=self._phone_name(), app=st.media_app)
+        return _t("bluetooth.home.from_phone")
+
+    def _title_text(self) -> str:
+        st = self._bt.status
+        # Real track title wins. App name (Spotify / YouTube) is a
+        # decent fallback when title isn't reported. Last resort is
+        # the phone name itself.
+        return st.media_title or st.media_app or self._phone_name()
+
+    def _artist_text(self) -> str:
+        st = self._bt.status
+        # Artist if we have it; otherwise the phone name (since the
+        # title line might have been the app name and we still want
+        # to identify the source).
+        if st.media_artist:
+            return st.media_artist
+        # Avoid duplicating the title line.
+        if not st.media_title and (st.media_app or not st.media_app):
+            return self._phone_name() if st.media_app else ""
+        return self._phone_name()
 
     def _apply_clock_layout(self) -> None:
         if _scene_bg_is_globe(self):
@@ -1418,6 +1475,12 @@ class WifiPasswordScene(Scene):
         self._shift: bool = False
         self._show: bool = False
 
+    def inhibit_auto_exit(self) -> bool:
+        # The user is composing a password; even a brief pause to read
+        # back the masked characters shouldn't dump them back to home
+        # and lose what they've typed.
+        return True
+
     def open(self, ssid: str) -> None:
         """Reset state for a fresh entry attempt."""
         self._ssid = ssid
@@ -1629,6 +1692,17 @@ class BluetoothScene(Scene):
         self._bt = bluetooth_service
         head_h = int(canvas_h * 0.12)
         self._head_h = head_h
+
+    def inhibit_auto_exit(self) -> bool:
+        # Pairing window or a phone in the middle of a session — both
+        # are user-perceptible operations that shouldn't get whipped
+        # out from underneath them just because the per-overlay
+        # inactivity timer ran out. Only block exit while one of those
+        # is true; the OFF state lets the normal timeout apply.
+        st = self._bt.status
+        return bool(st.discoverable_seconds_left > 0
+                    or st.connected_phone
+                    or st.streaming_from)
         self.add(_back_button(
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),

@@ -104,6 +104,17 @@ class BluetoothStatus:
     streaming_from: str = ""
     connected_phone: str = ""
     controller_name: str = ""
+    # AVRCP MediaPlayer1 surface from the connected phone — populated
+    # whenever bluetoothctl reports a `player.show` for the device.
+    # media_app is the app reporting (e.g. "Spotify", "YouTube");
+    # media_status one of {"playing","paused","stopped",""}; title +
+    # artist come from Track.* if the player exposes them ("Not
+    # Provided" is normalised to ""). The scene falls back gracefully
+    # to phone name when nothing useful is reported.
+    media_app: str = ""
+    media_status: str = ""
+    media_title: str = ""
+    media_artist: str = ""
 
 
 def _is_useful_name(name: str) -> bool:
@@ -529,11 +540,54 @@ class BluetoothService:
                     break
 
         self._streaming_addr = streaming_addr
+
+        # AVRCP player metadata — only worth a btctl call if a phone
+        # is actually connected; otherwise no player exists and we
+        # save ourselves the round-trip. Failures (no player, parse
+        # error, controller hiccup) leave the fields empty so the UI
+        # falls back to the phone name.
+        media_app = media_status = media_title = media_artist = ""
+        if connected_phone:
+            (media_app, media_status,
+             media_title, media_artist) = self._read_player()
+
         self._set(discoverable=discoverable,
                   discoverable_seconds_left=seconds_left,
                   streaming_from=streaming_name,
                   connected_phone=connected_phone,
-                  controller_name=controller_name)
+                  controller_name=controller_name,
+                  media_app=media_app,
+                  media_status=media_status,
+                  media_title=media_title,
+                  media_artist=media_artist)
+
+    def _read_player(self) -> tuple[str, str, str, str]:
+        """Parse `bluetoothctl player.show` into (app, status, title,
+        artist). Returns empty strings on any failure or when a field
+        is reported as the AVRCP placeholder 'Not Provided'."""
+        try:
+            out = self._btctl(["player.show"], timeout=5)
+        except subprocess.CalledProcessError:
+            return ("", "", "", "")
+        app = status = title = artist = ""
+        for raw in out.splitlines():
+            s = raw.strip()
+            if s.startswith("Name:"):
+                app = s.split(":", 1)[1].strip()
+            elif s.startswith("Status:"):
+                status = s.split(":", 1)[1].strip().lower()
+            elif s.startswith("Track.Title:"):
+                title = s.split(":", 1)[1].strip()
+            elif s.startswith("Track.Artist:"):
+                artist = s.split(":", 1)[1].strip()
+        # AVRCP carries a literal "Not Provided" string when the
+        # remote player doesn't expose the field; normalise to empty
+        # so the UI doesn't show it.
+        if title.lower() in ("", "not provided"):
+            title = ""
+        if artist.lower() in ("", "not provided"):
+            artist = ""
+        return (app, status, title, artist)
 
     def _sync_sink_route(self) -> None:
         """Compute the desired ALSA device for bluealsa-aplay from the

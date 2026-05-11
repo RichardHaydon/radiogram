@@ -236,6 +236,7 @@ EN: dict[str, str] = {
     "bluetooth.unknown_name": "(this radio)",
     # Home-screen variant shown while a phone is streaming.
     "bluetooth.home.from_phone": "FROM YOUR PHONE",
+    "bluetooth.home.from_phone_app": "FROM {phone} · {app}",
 
     # Verse / weather loading
     "verse.loading": "Loading…",
@@ -569,6 +570,7 @@ ES: dict[str, str] = {
     "bluetooth.link.speaker": "Conectar altavoz externo  ›",
     "bluetooth.unknown_name": "(esta radio)",
     "bluetooth.home.from_phone": "DESDE TU TELEFONO",
+    "bluetooth.home.from_phone_app": "DESDE {phone} · {app}",
 
     # Loading
     "verse.loading": "Cargando…",
@@ -898,6 +900,7 @@ NO: dict[str, str] = {
     "bluetooth.link.speaker": "Koble til ekstern hoyttaler  ›",
     "bluetooth.unknown_name": "(denne radioen)",
     "bluetooth.home.from_phone": "FRA TELEFONEN DIN",
+    "bluetooth.home.from_phone_app": "FRA {phone} · {app}",
 
     # Loading
     "verse.loading": "Laster…",

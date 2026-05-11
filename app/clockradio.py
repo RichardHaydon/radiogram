@@ -964,11 +964,15 @@ def main() -> int:
     def pick_scene() -> str:
         if alarms.firing:
             return "alarm"
-        # A phone streaming via BT takes precedence over the radio
+        # An active BT stream (or the phone's AVRCP reporting Playing
+        # even if the A2DP route is still settling) takes precedence
+        # over the radio
         # scene because the user paused MPD (or sink-mode did it for
         # them) and what's actually audible is the phone audio. Show
         # a home that reflects that — including a DISCONNECT button.
-        if bluetooth.status.streaming_from:
+        if bluetooth.status.streaming_from or (
+                bluetooth.status.connected_phone
+                and bluetooth.status.media_status == "playing"):
             return "bt_playing"
         return "radio" if mpd.status.active else "idle"
 
@@ -1223,11 +1227,17 @@ def main() -> int:
             # Auto-return from any settings/launcher overlay to the
             # home scene after SETTINGS_TIMEOUT_S of idleness. Demo
             # is exempted — the tour itself drives set_overlay() each
-            # step and would fight a clear from underneath.
+            # step and would fight a clear from underneath. Scenes
+            # running a finite user-perceptible operation (BT pairing
+            # countdown, mid-password typing, etc.) can opt out via
+            # inhibit_auto_exit so they aren't dismissed mid-task.
             if (compositor.has_overlay
                     and not demo.is_active
                     and time.monotonic() - last_input_t > SETTINGS_TIMEOUT_S):
-                compositor.clear_overlay()
+                cur = scenes.get(compositor.current_scene_name())
+                if not (cur is not None
+                        and getattr(cur, "inhibit_auto_exit", lambda: False)()):
+                    compositor.clear_overlay()
 
             if demo.is_active:
                 # Tour overrides everything: pin the panel to a
