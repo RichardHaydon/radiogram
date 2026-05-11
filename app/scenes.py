@@ -1692,17 +1692,6 @@ class BluetoothScene(Scene):
         self._bt = bluetooth_service
         head_h = int(canvas_h * 0.12)
         self._head_h = head_h
-
-    def inhibit_auto_exit(self) -> bool:
-        # Pairing window or a phone in the middle of a session — both
-        # are user-perceptible operations that shouldn't get whipped
-        # out from underneath them just because the per-overlay
-        # inactivity timer ran out. Only block exit while one of those
-        # is true; the OFF state lets the normal timeout apply.
-        st = self._bt.status
-        return bool(st.discoverable_seconds_left > 0
-                    or st.connected_phone
-                    or st.streaming_from)
         self.add(_back_button(
             canvas_w, head_h,
             on_press=lambda: compositor.set_overlay("settings"),
@@ -1732,6 +1721,17 @@ class BluetoothScene(Scene):
         self._dynamic: list[Widget] = []
 
     # --- helpers -------------------------------------------------------
+
+    def inhibit_auto_exit(self) -> bool:
+        # Pairing window or a phone in the middle of a session — both
+        # are user-perceptible operations that shouldn't get whipped
+        # out from underneath them just because the per-overlay
+        # inactivity timer ran out. Only block exit while one of those
+        # is true; the OFF state lets the normal timeout apply.
+        st = self._bt.status
+        return bool(st.discoverable_seconds_left > 0
+                    or st.connected_phone
+                    or st.streaming_from)
 
     def _status_line(self) -> str:
         s = self._bt.status
