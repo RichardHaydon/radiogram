@@ -136,6 +136,10 @@ LOCATION_PATH = Path("/var/lib/clockradio/location.json")
 VERSE_PATH = Path("/var/lib/clockradio/verse.json")
 THEME_PATH = Path("/var/lib/clockradio/theme.json")
 BRIGHTNESS_PATH = Path("/var/lib/clockradio/brightness.json")
+# Rolling 24 h CSV of light-sensor samples — purely for off-line
+# calibration analysis. LightService trims this hourly back to the
+# retention window so it doesn't grow forever.
+LIGHT_LOG_PATH = Path("/var/lib/clockradio/light-log.csv")
 BACKGROUND_PATH = Path("/var/lib/clockradio/background.json")
 LANGUAGE_PATH = Path("/var/lib/clockradio/language.json")
 # Default alarm sound. Slice 3c will add chime fallback for offline.
@@ -846,7 +850,8 @@ def main() -> int:
 
     light = LightService(
         get_dim_ref=lambda: brightness.config.light_dim_ref,
-        get_bright_ref=lambda: brightness.config.light_bright_ref)
+        get_bright_ref=lambda: brightness.config.light_bright_ref,
+        log_path=LIGHT_LOG_PATH)
     light.start()
 
     background = BackgroundService(BACKGROUND_PATH)

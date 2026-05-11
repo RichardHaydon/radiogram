@@ -14,6 +14,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 try:
@@ -73,6 +74,16 @@ RELEASE_TAU_S = 8.0   # count rising  (room getting darker)
 # sensor unavailable, still well under any human-noticeable lag.
 FAIL_STREAK_FOR_OUTAGE = 5
 
+# Rolling 24 h sensor log. One row every LOG_INTERVAL_S — at 5 s
+# that's 17 280 rows / ~1.4 MB per day, which we trim back to the
+# retention window every LOG_PRUNE_INTERVAL_S. Used purely for off-
+# line analysis (calibration tuning, drift inspection) — the running
+# service never reads its own log back.
+LOG_INTERVAL_S = 5.0
+LOG_RETENTION_S = 24 * 3600
+LOG_PRUNE_INTERVAL_S = 3600
+LOG_HEADER = "ts,raw,smooth,gain,dim_ref,bright_ref\n"
+
 
 @dataclass(frozen=True)
 class LightStatus:
@@ -85,7 +96,8 @@ class LightStatus:
 class LightService:
     def __init__(self,
                  get_dim_ref: Optional[Callable[[], int]] = None,
-                 get_bright_ref: Optional[Callable[[], int]] = None) -> None:
+                 get_bright_ref: Optional[Callable[[], int]] = None,
+                 log_path: Optional[Path] = None) -> None:
         self._lock = threading.Lock()
         self._status = LightStatus()
         self._stop = threading.Event()
@@ -98,6 +110,12 @@ class LightService:
         self._get_dim_ref = get_dim_ref or (lambda: DIM_REF_COUNT)
         self._get_bright_ref = (
             get_bright_ref or (lambda: BRIGHT_REF_COUNT))
+        # 24 h CSV of timestamped readings — passed in (or None to
+        # disable). Header is written lazily on first append so a
+        # missing-then-restored data dir self-heals.
+        self._log_path = log_path
+        self._last_log_t = 0.0
+        self._last_prune_t = 0.0
 
     @property
     def status(self) -> LightStatus:
@@ -188,6 +206,8 @@ class LightService:
                 print(f"light: count={count} smooth={int(smooth or 0)} "
                       f"gain={gain:.2f} avail={available}", flush=True)
 
+            self._maybe_log(count, smooth, gain, now)
+
             elapsed = now - t0
             self._stop.wait(max(0.0, POLL_S - elapsed))
 
@@ -216,6 +236,64 @@ class LightService:
             if time.perf_counter_ns() > deadline_ns:
                 return TIMEOUT_COUNT
         return max(0, (time.perf_counter_ns() - start_ns) // 1000)
+
+    def _maybe_log(self, raw: int, smooth: Optional[float],
+                   gain: float, now_mono: float) -> None:
+        if self._log_path is None:
+            return
+        if now_mono - self._last_log_t < LOG_INTERVAL_S:
+            return
+        self._last_log_t = now_mono
+        ts = int(time.time())
+        smooth_i = int(smooth) if smooth is not None else 0
+        row = (f"{ts},{int(raw)},{smooth_i},{gain:.3f},"
+               f"{int(self._get_dim_ref())},"
+               f"{int(self._get_bright_ref())}\n")
+        try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            new_file = not self._log_path.exists()
+            with self._log_path.open("a") as f:
+                if new_file:
+                    f.write(LOG_HEADER)
+                f.write(row)
+        except OSError as exc:
+            # Don't kill the polling thread over a disk hiccup —
+            # logs are a side project, the sensor must keep working.
+            print(f"light: log write failed: {exc}", flush=True)
+            return
+        if now_mono - self._last_prune_t >= LOG_PRUNE_INTERVAL_S:
+            self._last_prune_t = now_mono
+            self._prune_log()
+
+    def _prune_log(self) -> None:
+        if self._log_path is None or not self._log_path.exists():
+            return
+        cutoff = int(time.time()) - LOG_RETENTION_S
+        try:
+            with self._log_path.open() as f:
+                lines = f.readlines()
+        except OSError as exc:
+            print(f"light: log read failed: {exc}", flush=True)
+            return
+        # Preserve the header (any line that doesn't parse as an int
+        # timestamp), keep rows whose ts is within retention.
+        kept: list[str] = []
+        for line in lines:
+            first = line.split(",", 1)[0].strip()
+            if not first or not first.lstrip("-").isdigit():
+                kept.append(line)
+                continue
+            if int(first) >= cutoff:
+                kept.append(line)
+        if len(kept) == len(lines):
+            return
+        try:
+            tmp = self._log_path.with_suffix(".tmp")
+            with tmp.open("w") as f:
+                f.writelines(kept)
+            tmp.replace(self._log_path)
+        except OSError as exc:
+            print(f"light: log prune failed: {exc}", flush=True)
 
     @classmethod
     def _read_count(cls) -> int:
