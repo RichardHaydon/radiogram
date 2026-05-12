@@ -13,6 +13,7 @@ import re
 import socket
 import sys
 from dataclasses import replace
+from datetime import datetime
 
 from PIL import Image, ImageDraw
 
@@ -135,8 +136,23 @@ class Scene:
 
     def hit(self, cx: float, cy: float) -> Button | None:
         for w in reversed(self.widgets):
-            if isinstance(w, Button) and w.rect.contains(cx, cy):
-                return w
+            if not isinstance(w, Button):
+                continue
+            if not w.rect.contains(cx, cy):
+                continue
+            # Buttons with an empty label render nothing (see Button.render),
+            # so treating them as hit targets would let "hidden" buttons
+            # (e.g. the pre-alarm SKIP-NEXT banner outside its 15-min window)
+            # silently absorb taps. Skip them — but IconButton is exempt
+            # because it deliberately keeps an empty text label while still
+            # drawing an icon face.
+            if not isinstance(w, IconButton):
+                try:
+                    if not w.get_label():
+                        continue
+                except Exception:
+                    pass
+            return w
         return None
 
     def on_tap(self, cx: float, cy: float) -> bool:
@@ -153,23 +169,40 @@ class Scene:
         return None
 
 
-# --- back-arrow header button (used by every overlay) ----------------
+# --- back / home header buttons (used by every overlay) -------------
+#
+# Both buttons sit in the top-left band of every overlay scene. They
+# used to be a small icon (back arrow) plus a small text HOME — at
+# bedside distance the arrow was hard to read and the buttons looked
+# fragile. The new pair is labelled text on a comparable footprint so
+# the navigation affordance reads identically everywhere and the touch
+# targets are big enough for a sleepy finger. Width is computed from
+# canvas_w (not head_h) so a scene with a slim header still gets a
+# legible button, and the pair fits inside the ~0..0.28 canvas-width
+# band that title rects deliberately leave clear (see HEADER_TITLE_X
+# below — title text rects start at 0.30*canvas_w).
+HEADER_BTN_X_FRAC = 0.020
+HEADER_BTN_W_FRAC = 0.120
+HEADER_BTN_GAP_FRAC = 0.014
+HEADER_BTN_H_FRAC = 0.85     # of head_h
+HEADER_BTN_Y_FRAC = 0.075    # of head_h
 
-def _back_button(canvas_w: int, head_h: int, on_press) -> IconButton:
-    """Standard back-arrow icon button, sized to the scene's header
-    band and anchored to the top-left corner. Replaces the historical
-    "CLOSE" / "✕" text buttons across every overlay so the navigation
-    affordance reads the same everywhere."""
-    btn_h = int(head_h * 0.80)
-    btn_w = btn_h  # square
-    return IconButton(
-        Rect(int(canvas_w * 0.025), int(head_h * 0.10),
-             btn_w, btn_h),
+
+def _back_button(canvas_w: int, head_h: int, on_press) -> Button:
+    """Standard BACK button anchored to the top-left of every overlay
+    header. Labelled text rather than an arrow icon — the icon was too
+    small to read at bedside distance, and the label is unambiguous in
+    every shipped language (BACK / ATRAS / TILBAKE via i18n)."""
+    btn_h = int(head_h * HEADER_BTN_H_FRAC)
+    return Button(
+        Rect(int(canvas_w * HEADER_BTN_X_FRAC),
+             int(head_h * HEADER_BTN_Y_FRAC),
+             int(canvas_w * HEADER_BTN_W_FRAC), btn_h),
+        label_src=lambda: _t("button.back"),
         on_press=on_press,
-        icon_drawer=_icon_back_arrow,
+        font_factor=0.40,
         color_role="fg_accent",
         outline_width=2,
-        icon_factor=0.65,
     )
 
 
@@ -220,31 +253,26 @@ def _scene_bg_is_globe(scene: "Scene") -> bool:
         return False
 
 
-def _home_button(canvas_w: int, head_h: int, compositor) -> Button:
-    """"HOME" text button, placed next to the back arrow on every
-    overlay. Always clears all overlays back to the underlying idle/
-    radio scene — a one-tap escape from a deep nav stack (e.g.
-    Settings → Wifi → password keyboard back to clock). Was a house-
-    glyph icon; the small drawing was hard to read at bedside distance
-    so it's now the literal word, matching the other all-caps action
-    buttons in the UI (RESCAN, OK, ADD…)."""
-    btn_h = int(head_h * 0.80)
-    # Sized for the longest of the three home labels (Spanish "INICIO"
-    # is 6 chars; HOME / HJEM are only 4). Font factor tuned so the
-    # 6-char label fits without ellipsis at every resolution.
-    btn_w = int(head_h * 1.10)
-    # Sit just to the right of the back button. Back is at x=0.025
-    # with width = head_h*0.80 (square); this starts past it with a
-    # small gap.
-    back_w = int(head_h * 0.80)
-    back_end = int(canvas_w * 0.025) + back_w
-    gap = int(canvas_w * 0.012)
+def _home_button(canvas_w: int, head_h: int, compositor,
+                 *, on_press=None) -> Button:
+    """HOME button, sized to match `_back_button` and anchored just to
+    its right. Always clears overlays back to the underlying home
+    scene — a one-tap escape from a deep nav stack. Some scenes
+    (BluetoothScene) override `on_press` so they can run their own
+    cleanup (disconnect the phone) before clearing — pass it via the
+    keyword arg; default is the plain `clear_overlay()`."""
+    btn_h = int(head_h * HEADER_BTN_H_FRAC)
+    back_x = int(canvas_w * HEADER_BTN_X_FRAC)
+    back_w = int(canvas_w * HEADER_BTN_W_FRAC)
+    gap = int(canvas_w * HEADER_BTN_GAP_FRAC)
+    if on_press is None:
+        on_press = lambda: compositor.clear_overlay()
     return Button(
-        Rect(back_end + gap, int(head_h * 0.10),
-             btn_w, btn_h),
+        Rect(back_x + back_w + gap, int(head_h * HEADER_BTN_Y_FRAC),
+             int(canvas_w * HEADER_BTN_W_FRAC), btn_h),
         label_src=lambda: _t("button.home"),
-        on_press=lambda: compositor.clear_overlay(),
-        font_factor=0.32,
+        on_press=on_press,
+        font_factor=0.40,
         color_role="fg_accent",
         outline_width=2,
     )
@@ -317,6 +345,93 @@ def _format_footer_alarm(alarm_service) -> str:
     if a.skip_next:
         return f"{a.hour:02d}:{a.minute:02d} {_t('alarm.skip_marker')}"
     return f"{a.hour:02d}:{a.minute:02d}"
+
+
+# How early before the scheduled fire-time the pre-alarm banner kicks in.
+# 15 min is the bedside-clock-radio convention: long enough that a sleepy
+# user can dismiss before being startled, short enough that the banner
+# doesn't sit on the screen for hours obscuring the clock.
+PRE_ALARM_WINDOW_S = 15 * 60
+
+
+def _pre_alarm_seconds_left(alarm_service) -> int:
+    """Seconds until the next-to-fire alarm goes off, or -1 if no
+    countdown is currently active (no alarm armed, skip_next set, or
+    the alarm is more than PRE_ALARM_WINDOW_S away). Snoozed alarms
+    count too — re-firing in ~9 min is exactly the case the user wants
+    a visible countdown for."""
+    snz = getattr(alarm_service, "snoozed_until", None)
+    if snz is not None:
+        secs = int((snz - datetime.now()).total_seconds())
+        return secs if 0 <= secs <= PRE_ALARM_WINDOW_S else -1
+    nf = alarm_service.next_to_fire()
+    if nf is None:
+        return -1
+    a, ft = nf
+    if a.skip_next:
+        return -1
+    secs = int((ft - datetime.now()).total_seconds())
+    return secs if 0 <= secs <= PRE_ALARM_WINDOW_S else -1
+
+
+def _format_pre_alarm_banner(alarm_service) -> str:
+    """Banner text: "ALARM IN MM:SS" while the next alarm is within
+    PRE_ALARM_WINDOW_S, otherwise empty. Empty text hides the banner
+    widget (TextWidget early-exits on empty)."""
+    secs = _pre_alarm_seconds_left(alarm_service)
+    if secs < 0:
+        return ""
+    mm, ss = divmod(secs, 60)
+    return _t("alarm.imminent", time=f"{mm:02d}:{ss:02d}")
+
+
+def _format_skip_button(alarm_service) -> str:
+    """SKIP-NEXT label, but only while the pre-alarm banner is active
+    — outside the 15-min window the button is hidden (empty label =>
+    no render, no hit). We let the banner be the single visual cue:
+    the user only ever sees the button when there's something to skip
+    right now."""
+    if _pre_alarm_seconds_left(alarm_service) < 0:
+        return ""
+    return _t("button.skip_next")
+
+
+def _add_pre_alarm_banner(scene: "Scene", alarm_service,
+                          canvas_w: int, canvas_h: int) -> None:
+    """Slim top-of-screen banner that fades in when the next alarm is
+    within PRE_ALARM_WINDOW_S: countdown text on the left, SKIP-NEXT
+    button on the right. Both widgets are visually empty outside the
+    countdown window, so the banner contributes nothing to the layout
+    99% of the time. Shared by IdleScene / RadioScene /
+    BluetoothPlayingScene so every home variant offers the same
+    "cancel the alarm before it goes off" affordance."""
+    banner_h = int(canvas_h * 0.09)
+    btn_w = int(canvas_w * 0.22)
+    text_w = canvas_w - btn_w - int(canvas_w * 0.04)
+    text_x = int(canvas_w * 0.02)
+    btn_x = text_x + text_w + int(canvas_w * 0.02)
+    # Countdown text: accent colour + halo so it reads cleanly over the
+    # world-map background and the user's eye lands on it the moment
+    # they glance at the panel.
+    scene.add(TextWidget(
+        Rect(text_x, 0, text_w, banner_h),
+        text_src=lambda: _format_pre_alarm_banner(alarm_service),
+        font_factor=0.55,
+        color_role="fg_accent",
+        halo=True,
+    ))
+    # SKIP NEXT: toggles skip_next on the next-to-fire alarm. While the
+    # banner is hidden the label is empty, so Scene.hit() skips it (see
+    # the IconButton-exempt branch in the base hit() implementation).
+    scene.add(Button(
+        Rect(btn_x, int(banner_h * 0.10),
+             btn_w, int(banner_h * 0.80)),
+        label_src=lambda: _format_skip_button(alarm_service),
+        on_press=lambda: alarm_service.toggle_skip_next(),
+        font_factor=0.42,
+        color_role="fg_accent",
+        outline_width=2,
+    ))
 
 
 def _add_transport_footer(scene: "Scene", mpd_service, station_service,
@@ -471,6 +586,13 @@ class IdleScene(Scene):
         _add_transport_footer(self, mpd_service, station_service,
                               canvas_w, canvas_h, x_offset=alarm_w)
 
+        # Pre-alarm countdown banner — invisible until the next alarm
+        # is within PRE_ALARM_WINDOW_S. Added late so it paints over
+        # the clock during the imminent window: getting the user to
+        # the SKIP-NEXT button takes priority over the time-of-day
+        # readout for those last 15 min.
+        _add_pre_alarm_banner(self, alarm_service, canvas_w, canvas_h)
+
         # "Updating bg" indicator — paints last so it sits on top.
         self.add(_rendering_indicator(self, canvas_w, canvas_h))
 
@@ -504,7 +626,7 @@ class RadioScene(Scene):
     lives in the always-available footer."""
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
-                 compositor, mpd_service, station_service):
+                 compositor, mpd_service, station_service, alarm_service):
         super().__init__(theme, canvas_w, canvas_h)
         self._compositor = compositor
         # Reserve the bottom 10% for the volume footer (added below).
@@ -590,6 +712,10 @@ class RadioScene(Scene):
         ))
         _add_transport_footer(self, mpd_service, station_service,
                               canvas_w, canvas_h)
+
+        # Pre-alarm countdown banner — see IdleScene for context. Same
+        # behaviour: hidden until the next alarm is < 15 min away.
+        _add_pre_alarm_banner(self, alarm_service, canvas_w, canvas_h)
 
         # "Updating bg" indicator — paints last so it sits on top.
         self.add(_rendering_indicator(self, canvas_w, canvas_h))
@@ -767,6 +893,9 @@ class BluetoothPlayingScene(Scene):
         _add_bt_transport_footer(self, bluetooth_service, mpd_service,
                                  canvas_w, canvas_h, x_offset=alarm_w)
 
+        # Pre-alarm countdown banner — see IdleScene for context.
+        _add_pre_alarm_banner(self, alarm_service, canvas_w, canvas_h)
+
         self.add(_rendering_indicator(self, canvas_w, canvas_h))
 
     def on_tap(self, cx: float, cy: float) -> bool:
@@ -839,7 +968,7 @@ class LauncherScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.launcher.title"),
             font_factor=0.55,
@@ -1075,7 +1204,7 @@ class SettingsScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.60), head_h),
             text_src=lambda: _t("scene.settings.title"),
             font_factor=0.55,
@@ -1136,7 +1265,7 @@ class DisplaySettingsScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.display_settings.title"),
             font_factor=0.55,
@@ -1174,7 +1303,7 @@ class ThemeScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.theme.title"),
             font_factor=0.55,
@@ -1269,7 +1398,7 @@ class WifiScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.22), head_h),
             text_src=lambda: _t("scene.wifi.title"),
             font_factor=0.55,
@@ -1692,13 +1821,22 @@ class BluetoothScene(Scene):
         self._bt = bluetooth_service
         head_h = int(canvas_h * 0.12)
         self._head_h = head_h
+        # Both back-out paths drop the phone link first. Exiting this
+        # scene is the user's "I'm done with BT for now" signal — leaving
+        # the phone connected behind their back would let it keep
+        # holding the audio sink and starve the radio of ALSA access.
+        # We always also close the discoverable window for the same
+        # reason: nothing connected = no door open.
         self.add(_back_button(
             canvas_w, head_h,
-            on_press=lambda: compositor.set_overlay("settings"),
+            on_press=lambda: self._exit_to("settings"),
         ))
-        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(_home_button(
+            canvas_w, head_h, compositor,
+            on_press=lambda: self._exit_to(""),
+        ))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.60), head_h),
             text_src=lambda: _t("scene.bluetooth.title"),
             font_factor=0.45,
@@ -1799,6 +1937,24 @@ class BluetoothScene(Scene):
 
     def _go_speaker(self) -> None:
         self._compositor.set_overlay("bluetooth_speaker")
+
+    def _exit_to(self, overlay_name: str) -> None:
+        """Common back/home handler — disconnects the phone (if any),
+        closes the discoverable window, then either navigates to the
+        named overlay or clears overlays entirely (empty string = home).
+
+        Disconnect is fire-and-forget through the BT command queue, so
+        the navigation is immediate and the user is back on settings /
+        home within one frame; the actual bluez disconnect lands a
+        moment later on the BT thread."""
+        mac = self._connected_mac()
+        if mac:
+            self._bt.disconnect(mac)
+        self._bt.set_discoverable(False)
+        if overlay_name:
+            self._compositor.set_overlay(overlay_name)
+        else:
+            self._compositor.clear_overlay()
 
     # --- body builder --------------------------------------------------
 
@@ -2085,7 +2241,7 @@ class BluetoothSpeakerScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.30), head_h),
             text_src=lambda: _t("scene.bluetooth_speaker.title"),
             font_factor=0.40,
@@ -2335,7 +2491,7 @@ class VerseScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.40), head_h),
             text_src=lambda: _t("scene.verse.title"),
             font_factor=0.50,
@@ -2416,7 +2572,7 @@ class WeatherScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.34), head_h),
             text_src=lambda: _t("scene.weather.title"),
             font_factor=0.55,
@@ -2873,7 +3029,7 @@ class StationListScene(Scene):
         # Title trimmed to leave the right end of the header free for
         # the page indicator + paging buttons.
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.50), head_h),
             text_src=lambda: _t("scene.station_list.title"),
             font_factor=0.55,
@@ -3026,7 +3182,7 @@ class AlarmListScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.44), head_h),
             text_src=lambda: _t("scene.alarm_list.title"),
             font_factor=0.55,
@@ -3432,7 +3588,7 @@ class AboutScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.about.title"),
             font_factor=0.55,
@@ -3513,7 +3669,7 @@ class BrightnessScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.brightness.title"),
             font_factor=0.55,
@@ -3693,7 +3849,7 @@ class AudioOutputScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.audio_output.title"),
             font_factor=0.55,
@@ -3856,7 +4012,7 @@ class BackgroundScene(Scene):
         # Title trimmed so the page indicator + chevron buttons fit on
         # the right side of the header (matches StationListScene).
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.50), head_h),
             text_src=lambda: _t("scene.background.title"),
             font_factor=0.55,
@@ -4073,7 +4229,7 @@ class MapCenterScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.map_center.title"),
             font_factor=0.55,
@@ -4145,7 +4301,7 @@ class DemoIntroScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.demo_intro.title"),
             font_factor=0.55,
@@ -4252,7 +4408,7 @@ class LanguageScene(Scene):
         ))
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.20), 0,
+            Rect(int(canvas_w * 0.30), 0,
                  int(canvas_w * 0.66), head_h),
             text_src=lambda: _t("scene.language.title"),
             font_factor=0.55,

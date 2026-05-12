@@ -79,6 +79,7 @@ EN: dict[str, str] = {
     "button.close": "CLOSE",
 
     # Action / nav buttons
+    "button.back": "‹ BACK",
     "button.home": "HOME",
     "button.cancel": "CANCEL",
     "button.save": "SAVE",
@@ -122,6 +123,7 @@ EN: dict[str, str] = {
     "alarm.snoozed_until": "Snoozed until {time}",
     "alarm.snz_short": "Snz",
     "alarm.skip_marker": "skip next",
+    "alarm.imminent": "⏰ ALARM IN {time}",
 
     # Day labels (alarm.days_label)
     "days.once": "once",
@@ -418,6 +420,7 @@ ES: dict[str, str] = {
     "button.close": "CERRAR",
 
     # Action / nav buttons
+    "button.back": "‹ ATRAS",
     "button.home": "INICIO",
     "button.cancel": "CANCELAR",
     "button.save": "GUARDAR",
@@ -461,6 +464,7 @@ ES: dict[str, str] = {
     "alarm.snoozed_until": "Pospuesta hasta {time}",
     "alarm.snz_short": "Pos",
     "alarm.skip_marker": "omitir prox.",
+    "alarm.imminent": "⏰ ALARMA EN {time}",
 
     # Days
     "days.once": "una vez",
@@ -748,6 +752,7 @@ NO: dict[str, str] = {
     "button.close": "LUKK",
 
     # Action / nav buttons
+    "button.back": "‹ TILBAKE",
     "button.home": "HJEM",
     "button.cancel": "AVBRYT",
     "button.save": "LAGRE",
@@ -791,6 +796,7 @@ NO: dict[str, str] = {
     "alarm.snoozed_until": "Slumret til {time}",
     "alarm.snz_short": "Slm",
     "alarm.skip_marker": "hopp over neste",
+    "alarm.imminent": "⏰ ALARM OM {time}",
 
     # Days
     "days.once": "en gang",

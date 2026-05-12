@@ -505,23 +505,6 @@ class BluetoothService:
             streaming_name = self._device_name(streaming_addr) \
                 or streaming_addr
 
-        # 3. Pause/resume orchestration. We only mutate MPD on edge
-        # transitions to avoid spamming toggle every poll. The flag
-        # captures whether MPD was *playing* (not paused, not stopped)
-        # so we don't accidentally start playing on a phone disconnect
-        # if the user had explicitly stopped the radio earlier.
-        # MPDService only exposes a single `toggle` string command for
-        # play/pause; we use it in both directions, gated by was_playing.
-        prev_streaming = self._status.streaming_from
-        if streaming_name and not prev_streaming:
-            self._was_playing = self._mpd_is_playing()
-            if self._was_playing:
-                self._mpd_command("toggle")   # play → pause
-        elif prev_streaming and not streaming_name:
-            if self._was_playing:
-                self._mpd_command("toggle")   # pause → play
-            self._was_playing = False
-
         # Identify a connected paired non-speaker device — typically
         # a phone that pair-completed via sink mode. Surfaced in the
         # UI as "Phone connected" so the user gets confirmation even
@@ -538,6 +521,31 @@ class BluetoothService:
                         and d.mac != self._status.paired_mac:
                     connected_phone = d.name
                     break
+
+        # Pause/resume orchestration. We pause MPD the moment a phone
+        # connects — not just when it starts streaming — because phone
+        # and radio share the same ALSA hw device and letting MPD keep
+        # playing while bluealsa-aplay races to grab the sink produces
+        # the "radio stops randomly after a few minutes" symptom the
+        # user hit while paired. Conservative side-effect: a paired-
+        # but-silent phone in your pocket pauses the radio while you're
+        # next to it — but the exit-disconnect path in BluetoothScene
+        # restores normal behaviour the moment you leave the BT screen.
+        # We only mutate MPD on edge transitions and the was-playing
+        # flag captures whether MPD was *playing* (not paused, not
+        # stopped) so a phone disconnect doesn't accidentally start
+        # playing the radio if the user had explicitly stopped it.
+        prev_owned = bool(self._status.streaming_from
+                          or self._status.connected_phone)
+        owned = bool(streaming_name or connected_phone)
+        if owned and not prev_owned:
+            self._was_playing = self._mpd_is_playing()
+            if self._was_playing:
+                self._mpd_command("toggle")   # play → pause
+        elif prev_owned and not owned:
+            if self._was_playing:
+                self._mpd_command("toggle")   # pause → play
+            self._was_playing = False
 
         self._streaming_addr = streaming_addr
 

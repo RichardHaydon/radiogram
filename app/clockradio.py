@@ -991,6 +991,7 @@ def main() -> int:
     scenes["radio"] = RadioScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, mpd_service=mpd, station_service=stations,
+        alarm_service=alarms,
     )
     scenes["bt_playing"] = BluetoothPlayingScene(
         theme, display.canvas_w, display.canvas_h,
@@ -1171,6 +1172,13 @@ def main() -> int:
         return bl, (sw, sw, sw)
 
     last_input_t = time.monotonic()
+    # Track previous alarm-firing edge so the very moment an alarm goes
+    # off we treat it like a touch — reset last_input_t and snap out of
+    # dim mode. Without this, a 06:30 alarm fired while the panel was
+    # dim would render the AlarmFiringScene at bedside-low brightness
+    # and the user couldn't see the STOP button until they touched the
+    # screen first.
+    prev_firing = bool(alarms.firing)
     init_b, init_rgb = active_target()
     current_b = float(init_b)
     target_b = init_b
@@ -1198,6 +1206,19 @@ def main() -> int:
     try:
         while running:
             active_b, active_rgb = active_target()
+            # Edge-trigger wake-on-fire: when alarms.firing flips True
+            # we reset the idle stamp + snap brightness to active so the
+            # firing scene comes up at full visibility regardless of
+            # whether the panel was dim before. The firing-scene STOP
+            # button is the only useful affordance at 06:30 — it has to
+            # be readable immediately, not after a touch-to-wake gesture.
+            firing_now = bool(alarms.firing)
+            if firing_now and not prev_firing:
+                last_input_t = time.monotonic()
+                current_b = float(active_b)
+                current_rgb = list(active_rgb)
+                backlight.write(int(current_b))
+            prev_firing = firing_now
             for ev in touch.poll():
                 last_input_t = time.monotonic()
                 target_b, target_rgb = active_b, active_rgb
