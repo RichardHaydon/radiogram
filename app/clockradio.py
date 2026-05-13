@@ -1235,6 +1235,16 @@ def main() -> int:
                 # The previous-frame mode is the authoritative signal.
                 was_dim = (prev_mode == "dim")
                 if was_dim:
+                    # Snap to active immediately on wake — the gentle
+                    # fade is fine for active→dim but going dim→active
+                    # via fade at low active brightness (5%) made the
+                    # change too subtle to register as "the panel
+                    # responded to my tap". Snap means the user sees
+                    # the screen change on the same frame they touched
+                    # it; they then know they can tap again to act.
+                    current_b = float(active_b)
+                    current_rgb = list(active_rgb)
+                    backlight.write(int(current_b))
                     # Discard the in-flight press so neither the hold
                     # path (which would mark a button visually pressed
                     # during the fade-up) nor the trailing tap on
