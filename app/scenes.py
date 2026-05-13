@@ -347,11 +347,12 @@ def _format_footer_alarm(alarm_service) -> str:
     return f"{a.hour:02d}:{a.minute:02d}"
 
 
-# How early before the scheduled fire-time the pre-alarm banner kicks in.
-# 15 min is the bedside-clock-radio convention: long enough that a sleepy
-# user can dismiss before being startled, short enough that the banner
-# doesn't sit on the screen for hours obscuring the clock.
-PRE_ALARM_WINDOW_S = 15 * 60
+# How early before the scheduled fire-time the pre-alarm banner kicks in
+# (and the panel wakes out of dim — see clockradio.main()). 5 min is
+# long enough for a sleepy user to register the countdown and skip if
+# they want, short enough that the panel doesn't sit fully lit beside
+# the bed for ages obscuring the clock.
+PRE_ALARM_WINDOW_S = 5 * 60
 
 
 def _pre_alarm_seconds_left(alarm_service) -> int:
