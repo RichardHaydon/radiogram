@@ -1222,13 +1222,18 @@ def main() -> int:
             for ev in touch.poll():
                 last_input_t = time.monotonic()
                 target_b, target_rgb = active_b, active_rgb
-                # Suppress actions if screen was dim — first contact only
-                # wakes; user must touch a lit screen to act. The was_dim
-                # check uses the backlight level + the red channel
-                # (always == sw, never tinted) so it still trips
-                # correctly when dim is achieved via software multiplier.
-                was_dim = (current_b < max(active_b, 2) * 0.5
-                           or current_rgb[0] < 0.5)
+                # Wake-only: a touch on a dim panel should bring the
+                # backlight up without forwarding the press to the
+                # current scene — landing in the launcher because the
+                # tap happened to hit empty area is jarring at 3am.
+                # The previous heuristic compared backlight + red
+                # channel against fractions of the active level, which
+                # silently failed when the user's active brightness
+                # was already low (5%) and the dim path used the
+                # software multiplier (resolves to current_b == 1,
+                # current_rgb[0] > 0.5 — both above the thresholds).
+                # The previous-frame mode is the authoritative signal.
+                was_dim = (prev_mode == "dim")
                 if was_dim:
                     # Discard the in-flight press so neither the hold
                     # path (which would mark a button visually pressed
