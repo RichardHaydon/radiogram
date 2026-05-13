@@ -1260,6 +1260,18 @@ def main() -> int:
                         and getattr(cur, "inhibit_auto_exit", lambda: False)()):
                     compositor.clear_overlay()
 
+            # Pre-alarm wake: while the next alarm is within
+            # PRE_ALARM_WINDOW_S we treat the panel as actively-used
+            # so it stays at the user's full brightness instead of
+            # fading to dim. Without this, the countdown banner in
+            # IdleScene / RadioScene / BluetoothPlayingScene would
+            # render correctly but be invisible against a dim panel —
+            # so the user wouldn't see they have a chance to skip the
+            # alarm before it goes off. Active-mode also leaves the
+            # SKIP-NEXT button tappable on first contact (no wake-only
+            # gesture stealing the press).
+            pre_alarm_active = _scenes_mod._pre_alarm_seconds_left(alarms) >= 0
+
             if demo.is_active:
                 # Tour overrides everything: pin the panel to a
                 # showcase level and out of the dim path. The mode
@@ -1271,7 +1283,8 @@ def main() -> int:
                 target_b = bl
                 target_rgb = (sw, sw, sw)
                 target_mode = "demo"
-            elif time.monotonic() - last_input_t > IDLE_TIMEOUT_S:
+            elif (not pre_alarm_active
+                  and time.monotonic() - last_input_t > IDLE_TIMEOUT_S):
                 target_b, target_rgb = idle_dim_target()
                 target_mode = "dim"
             else:
