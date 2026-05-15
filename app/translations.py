@@ -39,6 +39,9 @@ EN: dict[str, str] = {
     "scene.weather.title": "Weather",
     "scene.weather_location.title": "Choose location",
     "scene.station_list.title": "Stations",
+    "scene.radio_hub.title": "Radio",
+    "scene.podcast_list.title": "Podcasts",
+    "scene.podcast_episodes.title": "Episodes",
     "scene.alarm_list.title": "Alarms",
     "scene.alarm_edit.title.new": "New Alarm",
     "scene.alarm_edit.title.edit": "Edit Alarm",
@@ -111,6 +114,17 @@ EN: dict[str, str] = {
     "button.run_tour": "RUN GUIDED TOUR",
     "button.skip_next": "SKIP NEXT",
     "button.unskip": "UNSKIP",
+    "button.subscribe": "+ SUBSCRIBE",
+    "button.unsubscribe": "UNSUBSCRIBE",
+
+    # Radio hub
+    "radio_hub.stations": "STATIONS",
+    "radio_hub.podcasts": "PODCASTS",
+    "podcast.empty_list": "(no podcasts — tap +SUBSCRIBE)",
+    "podcast.no_episodes": "(no episodes yet — try refreshing)",
+    "podcast.add_url_prompt": "Paste podcast feed URL",
+    "podcast.fetching": "Fetching feed…",
+    "podcast.fetch_failed": "Couldn't load feed",
 
     # Alarm edit / list
     "alarm.enabled": "ENABLED",
@@ -269,6 +283,7 @@ EN: dict[str, str] = {
     "about.row.alarms": "Alarms  {count}",
     "about.row.stations": "Stations  {count}",
     "about.row.mpd": "MPD     {state}",
+    "about.audio_output_link": "Audio output ›",
 
     # Misc placeholders
     "misc.dash": "—",
@@ -380,6 +395,9 @@ ES: dict[str, str] = {
     "scene.weather.title": "Tiempo",
     "scene.weather_location.title": "Elegir ubicacion",
     "scene.station_list.title": "Emisoras",
+    "scene.radio_hub.title": "Radio",
+    "scene.podcast_list.title": "Podcasts",
+    "scene.podcast_episodes.title": "Episodios",
     "scene.alarm_list.title": "Alarmas",
     "scene.alarm_edit.title.new": "Nueva alarma",
     "scene.alarm_edit.title.edit": "Editar alarma",
@@ -452,6 +470,17 @@ ES: dict[str, str] = {
     "button.run_tour": "INICIAR DEMOSTRACION",
     "button.skip_next": "OMITIR",
     "button.unskip": "REACTIVAR",
+    "button.subscribe": "+ SUSCRIBIR",
+    "button.unsubscribe": "QUITAR",
+
+    # Radio hub
+    "radio_hub.stations": "EMISORAS",
+    "radio_hub.podcasts": "PODCASTS",
+    "podcast.empty_list": "(sin podcasts — pulsa +SUSCRIBIR)",
+    "podcast.no_episodes": "(sin episodios — pulsa recargar)",
+    "podcast.add_url_prompt": "Pega URL del podcast",
+    "podcast.fetching": "Cargando feed…",
+    "podcast.fetch_failed": "No se pudo cargar el feed",
 
     # Alarm
     "alarm.enabled": "ACTIVA",
@@ -605,6 +634,7 @@ ES: dict[str, str] = {
     "about.row.alarms": "Alarmas {count}",
     "about.row.stations": "Emisoras  {count}",
     "about.row.mpd": "MPD     {state}",
+    "about.audio_output_link": "Salida de audio ›",
 
     "misc.dash": "—",
 
@@ -712,6 +742,9 @@ NO: dict[str, str] = {
     "scene.weather.title": "Vaer",
     "scene.weather_location.title": "Velg sted",
     "scene.station_list.title": "Stasjoner",
+    "scene.radio_hub.title": "Radio",
+    "scene.podcast_list.title": "Podkaster",
+    "scene.podcast_episodes.title": "Episoder",
     "scene.alarm_list.title": "Alarmer",
     "scene.alarm_edit.title.new": "Ny alarm",
     "scene.alarm_edit.title.edit": "Rediger alarm",
@@ -784,6 +817,17 @@ NO: dict[str, str] = {
     "button.run_tour": "START OMVISNING",
     "button.skip_next": "HOPP OVER",
     "button.unskip": "ANGRE",
+    "button.subscribe": "+ ABONNER",
+    "button.unsubscribe": "AVSLUTT",
+
+    # Radio hub
+    "radio_hub.stations": "STASJONER",
+    "radio_hub.podcasts": "PODKASTER",
+    "podcast.empty_list": "(ingen podkaster — trykk +ABONNER)",
+    "podcast.no_episodes": "(ingen episoder — last inn på nytt)",
+    "podcast.add_url_prompt": "Lim inn podkast-URL",
+    "podcast.fetching": "Henter feed…",
+    "podcast.fetch_failed": "Kunne ikke hente feed",
 
     # Alarm
     "alarm.enabled": "PA",
@@ -937,6 +981,7 @@ NO: dict[str, str] = {
     "about.row.alarms": "Alarmer {count}",
     "about.row.stations": "Stasjoner  {count}",
     "about.row.mpd": "MPD     {state}",
+    "about.audio_output_link": "Lydutgang ›",
 
     "misc.dash": "—",
 

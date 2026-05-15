@@ -405,9 +405,15 @@ def _add_pre_alarm_banner(scene: "Scene", alarm_service,
     countdown window, so the banner contributes nothing to the layout
     99% of the time. Shared by IdleScene / RadioScene /
     BluetoothPlayingScene so every home variant offers the same
-    "cancel the alarm before it goes off" affordance."""
-    banner_h = int(canvas_h * 0.09)
-    btn_w = int(canvas_w * 0.22)
+    "cancel the alarm before it goes off" affordance.
+
+    Sized for bedside readability: previously the band was 9% of canvas
+    with a 0.42 font factor, which on a 320px panel produced a ~9px
+    SKIP NEXT label and was the cause of "the panel wakes but I see
+    no cancel". 13% band + larger fonts brings the button into the
+    same legibility tier as the alarm pill in the footer."""
+    banner_h = int(canvas_h * 0.13)
+    btn_w = int(canvas_w * 0.26)
     text_w = canvas_w - btn_w - int(canvas_w * 0.04)
     text_x = int(canvas_w * 0.02)
     btn_x = text_x + text_w + int(canvas_w * 0.02)
@@ -417,7 +423,7 @@ def _add_pre_alarm_banner(scene: "Scene", alarm_service,
     scene.add(TextWidget(
         Rect(text_x, 0, text_w, banner_h),
         text_src=lambda: _format_pre_alarm_banner(alarm_service),
-        font_factor=0.55,
+        font_factor=0.60,
         color_role="fg_accent",
         halo=True,
     ))
@@ -425,11 +431,11 @@ def _add_pre_alarm_banner(scene: "Scene", alarm_service,
     # banner is hidden the label is empty, so Scene.hit() skips it (see
     # the IconButton-exempt branch in the base hit() implementation).
     scene.add(Button(
-        Rect(btn_x, int(banner_h * 0.10),
-             btn_w, int(banner_h * 0.80)),
+        Rect(btn_x, int(banner_h * 0.08),
+             btn_w, int(banner_h * 0.84)),
         label_src=lambda: _format_skip_button(alarm_service),
         on_press=lambda: alarm_service.toggle_skip_next(),
-        font_factor=0.42,
+        font_factor=0.50,
         color_role="fg_accent",
         outline_width=2,
     ))
@@ -976,22 +982,21 @@ class LauncherScene(Scene):
             color_role="fg_dim",
         ))
 
-        def stub():
-            return None
-
         # (i18n-key, on_press, icon-name). The label_src closes over the
         # key so a language switch repaints with the new text without
-        # rebuilding the scene.
+        # rebuilding the scene. The CAMERA tile was dropped — its action
+        # was a no-op stub and the launcher reads more confidently with
+        # only working tiles. Podcasts are reachable from RADIO so they
+        # don't need a top-level slot.
         cells = [
             ("launcher.tile.radio",
-             lambda: compositor.set_overlay("station_list"), "radio"),
+             lambda: compositor.set_overlay("radio_hub"), "radio"),
             ("launcher.tile.alarms",
              lambda: compositor.set_overlay("alarm_list"), "clock"),
             ("launcher.tile.weather",
              lambda: compositor.set_overlay("weather"), "partly_cloudy"),
             ("launcher.tile.verse",
              lambda: compositor.set_overlay("verse"), "book"),
-            ("launcher.tile.camera", stub, "camera"),
             ("launcher.tile.settings",
              lambda: compositor.set_overlay("settings"), "gear"),
         ]
@@ -1018,6 +1023,108 @@ class LauncherScene(Scene):
                 on_press=action,
                 icon_drawer=LAUNCHER_ICONS.get(icon_name),
             ))
+
+
+class RadioHubScene(Scene):
+    """RADIO launcher target — branch point between live stations and
+    podcasts. Previously the RADIO tile dumped users straight into the
+    stations list, but stations are already 1 tap from the home footer
+    (idle → footer PLAY → RadioScene → STATIONS), so a second "stations
+    only" shortcut was redundant. Now the tile lands here and routes to
+    either source with equal weight, leaving headroom for the podcast
+    library without growing the launcher grid.
+
+    Layout: header (BACK / RADIO / HOME) · now-playing strip · two
+    big tile cards (STATIONS · PODCASTS) · transport footer. The
+    transport footer behaves like the rest of the home variants: PLAY
+    resumes the last-played source (station today; podcast episode
+    once #88 lands), STOP halts everything."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, mpd_service, station_service, alarm_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        head_h = int(canvas_h * 0.14)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("launcher"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.30), 0,
+                 int(canvas_w * 0.66), head_h),
+            text_src=lambda: _t("scene.radio_hub.title"),
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+
+        # Now-playing band: station name / ICY title / stream format.
+        # Identical content to RadioScene's NP band so the hub looks like
+        # a context-preserving home — picking a card returns the user
+        # to the same "what's on" they were just looking at.
+        np_y = head_h + int(canvas_h * 0.01)
+        np_h = int(canvas_h * 0.22)
+        sl_h = int(np_h * 0.40)
+        tl_h = int(np_h * 0.35)
+        fmt_h = np_h - sl_h - tl_h
+
+        def station_line() -> str:
+            cur = station_service.current()
+            if cur is not None and cur.name:
+                return cur.name
+            return mpd_service.status.station or _t("station.unknown")
+
+        self.add(TextWidget(
+            Rect(0, np_y, canvas_w, sl_h),
+            text_src=station_line,
+            font_factor=0.60,
+            color_role="fg_accent",
+        ))
+        self.add(TextWidget(
+            Rect(0, np_y + sl_h, canvas_w, tl_h),
+            text_src=lambda: mpd_service.status.title,
+            font_role="regular",
+            font_factor=0.55,
+            color_role="fg_subtle",
+        ))
+        self.add(TextWidget(
+            Rect(0, np_y + sl_h + tl_h, canvas_w, fmt_h),
+            text_src=lambda: _format_stream_info(
+                mpd_service.status.audio, mpd_service.status.bitrate),
+            font_role="regular",
+            font_factor=0.70,
+            color_role="fg_dim",
+        ))
+
+        # Two side-by-side cards, each ~half the remaining body height.
+        # AppTile (icon + label) reuses the launcher visual language —
+        # users already know what a tile means here.
+        footer_h = int(canvas_h * 0.10)
+        cards_top = np_y + np_h + int(canvas_h * 0.015)
+        cards_bot = canvas_h - footer_h - int(canvas_h * 0.015)
+        cards_h = cards_bot - cards_top
+        pad_x = int(canvas_w * 0.04)
+        gap_x = int(canvas_w * 0.025)
+        card_w = (canvas_w - 2 * pad_x - gap_x) // 2
+        self.add(AppTile(
+            Rect(pad_x, cards_top, card_w, cards_h),
+            label_src=lambda: _t("radio_hub.stations"),
+            on_press=lambda: compositor.set_overlay("station_list"),
+            icon_drawer=LAUNCHER_ICONS.get("radio"),
+        ))
+        self.add(AppTile(
+            Rect(pad_x + card_w + gap_x, cards_top, card_w, cards_h),
+            label_src=lambda: _t("radio_hub.podcasts"),
+            on_press=lambda: compositor.set_overlay("podcast_list"),
+            icon_drawer=LAUNCHER_ICONS.get("podcast"),
+        ))
+
+        _add_transport_footer(self, mpd_service, station_service,
+                              canvas_w, canvas_h)
+
+        # Pre-alarm countdown banner — same affordance as the other home
+        # variants. Added late so it paints over the title row during the
+        # imminent window.
+        _add_pre_alarm_banner(self, alarm_service, canvas_w, canvas_h)
 
 
 class QuickPanelScene(Scene):
@@ -1226,13 +1333,20 @@ class SettingsScene(Scene):
             outline_width=2,
             icon_factor=0.65,
         ))
+        # AUDIO output was demoted from this grid: with mpd-autoconfig
+        # picking the right wired/USB output automatically and
+        # BluetoothSpeakerScene covering radio-as-source, the AUDIO
+        # OUTPUT picker is a once-at-setup screen. It's still
+        # registered (audio_output overlay) and reachable via the
+        # "Audio output" link at the bottom of AboutScene so power
+        # users keep their escape hatch.
         tiles = [
             ((lambda: _t("settings.row.wifi")),
              lambda: compositor.set_overlay("wifi"),
              _adapt_settings_icon(SETTINGS_ICONS.get("wifi"))),
-            ((lambda: _t("settings.row.audio")),
-             lambda: compositor.set_overlay("audio_output"),
-             _adapt_settings_icon(SETTINGS_ICONS.get("speaker"))),
+            ((lambda: _t("settings.row.bluetooth")),
+             lambda: compositor.set_overlay("bluetooth"),
+             _adapt_settings_icon(SETTINGS_ICONS.get("bluetooth"))),
             ((lambda: _t("settings.row.display")),
              lambda: compositor.set_overlay("display_settings"),
              _adapt_settings_icon(SETTINGS_ICONS.get("monitor"))),
@@ -1242,9 +1356,6 @@ class SettingsScene(Scene):
             ((lambda: _t("settings.row.demo")),
              lambda: compositor.set_overlay("demo_intro"),
              _adapt_settings_icon(SETTINGS_ICONS.get("play"))),
-            ((lambda: _t("settings.row.bluetooth")),
-             lambda: compositor.set_overlay("bluetooth"),
-             _adapt_settings_icon(SETTINGS_ICONS.get("bluetooth"))),
         ]
         _settings_tile_grid(self, canvas_w, canvas_h, head_h,
                             tiles, cols=3, rows=2)
@@ -3160,6 +3271,483 @@ class StationListScene(Scene):
         return super().hit(cx, cy)
 
 
+class PodcastListScene(Scene):
+    """Overlay: list of subscribed podcast feeds, plus +SUBSCRIBE.
+
+    Tap a row → open the episode list for that feed. Tap +SUBSCRIBE →
+    on-screen keyboard to paste a feed URL. The list is rebuilt each
+    render so a successful subscribe (which lands on a worker thread)
+    appears as soon as the fetch returns."""
+
+    MAX_ROWS = 5
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, podcast_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._podcasts = podcast_service
+        head_h = int(canvas_h * 0.14)
+        self._head_h = head_h
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("radio_hub"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.30), 0,
+                 int(canvas_w * 0.50), head_h),
+            text_src=lambda: _t("scene.podcast_list.title"),
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+        # +SUBSCRIBE button on the right of the header — mirrors AlarmList's
+        # +ADD placement so the "make a new one" affordance lives in the
+        # same spot across lists.
+        sub_h = int(head_h * 0.80)
+        sub_w = int(canvas_w * 0.28)
+        right_pad = int(canvas_w * 0.025)
+        self.add(Button(
+            Rect(canvas_w - right_pad - sub_w, int(head_h * 0.10),
+                 sub_w, sub_h),
+            label_src=lambda: _t("button.subscribe"),
+            on_press=self._open_subscribe,
+            font_factor=0.36,
+            color_role="fg_accent",
+            outline_width=2,
+        ))
+        self._row_widgets: list[Widget] = []
+
+    def _open_subscribe(self) -> None:
+        url_scene = self._compositor.scenes.get("podcast_url")
+        if url_scene is not None:
+            url_scene.open()
+        self._compositor.set_overlay("podcast_url")
+
+    def _open_episodes(self, podcast_id: str) -> None:
+        ep_scene = self._compositor.scenes.get("podcast_episodes")
+        if ep_scene is not None:
+            ep_scene.open(podcast_id)
+        self._compositor.set_overlay("podcast_episodes")
+
+    def _rebuild_rows(self) -> None:
+        for w in self._row_widgets:
+            try:
+                self.widgets.remove(w)
+            except ValueError:
+                pass
+        self._row_widgets.clear()
+        pods = self._podcasts.podcasts
+        body_top = self._head_h + int(self.canvas_h * 0.02)
+        body_h = self.canvas_h - body_top - int(self.canvas_h * 0.02)
+        if self._podcasts.is_fetching():
+            placeholder = TextWidget(
+                Rect(0, body_top, self.canvas_w, body_h),
+                text_src=lambda: _t("podcast.fetching"),
+                font_factor=0.07,
+                color_role="fg_dim",
+                font_role="regular",
+            )
+            self.widgets.append(placeholder)
+            self._row_widgets.append(placeholder)
+            return
+        if not pods:
+            empty = TextWidget(
+                Rect(0, body_top, self.canvas_w, body_h),
+                text_src=lambda: _t("podcast.empty_list"),
+                font_factor=0.07,
+                color_role="fg_dim",
+                font_role="regular",
+            )
+            self.widgets.append(empty)
+            self._row_widgets.append(empty)
+            return
+        page_pods = pods[:self.MAX_ROWS]
+        cell_h = body_h // self.MAX_ROWS
+        cur_pid = self._podcasts.current_podcast_id
+        for i, p in enumerate(page_pods):
+            mark = "▶ " if p.id == cur_pid else "  "
+            label = f"{mark}{p.title or p.feed_url}"
+            color_role = "fg_bright" if p.id == cur_pid else "fg_dim"
+            btn = Button(
+                Rect(int(self.canvas_w * 0.04), body_top + i * cell_h,
+                     int(self.canvas_w * 0.92), cell_h - 8),
+                label_src=label,
+                on_press=lambda pid=p.id: self._open_episodes(pid),
+                font_factor=0.30,
+                color_role=color_role,
+            )
+            self.widgets.append(btn)
+            self._row_widgets.append(btn)
+
+    def state_key(self) -> tuple:
+        return (
+            tuple((p.id, p.title) for p in self._podcasts.podcasts),
+            self._podcasts.current_podcast_id,
+            self._podcasts.is_fetching(),
+        )
+
+    def render(self) -> Image.Image:
+        self._rebuild_rows()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._rebuild_rows()
+        return super().hit(cx, cy)
+
+
+class PodcastEpisodeListScene(Scene):
+    """Overlay: list of recent episodes for one podcast. Tap an episode
+    row → play + drop back to RadioScene. Header carries a REFRESH (re-
+    fetch the feed) and UNSUBSCRIBE (drop the podcast)."""
+
+    MAX_ROWS = 5
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, podcast_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._podcasts = podcast_service
+        self._podcast_id: str | None = None
+        self._head_h = int(canvas_h * 0.14)
+        # Header trio: BACK / TITLE / HOME, plus two action buttons
+        # rebuilt in _build_header_actions (label depends on current
+        # podcast — refresh and unsubscribe).
+        self.add(_back_button(
+            canvas_w, self._head_h,
+            on_press=lambda: compositor.set_overlay("podcast_list"),
+        ))
+        self.add(_home_button(canvas_w, self._head_h, compositor))
+        self._title_widget = TextWidget(
+            Rect(int(canvas_w * 0.30), 0,
+                 int(canvas_w * 0.46), self._head_h),
+            text_src=self._title_text,
+            font_factor=0.50,
+            color_role="fg_dim",
+        )
+        self.add(self._title_widget)
+        # REFRESH and UNSUBSCRIBE pinned to the header right. Compact
+        # widths so the title still fits on small canvases.
+        btn_h = int(self._head_h * 0.80)
+        right_pad = int(canvas_w * 0.025)
+        unsub_w = int(canvas_w * 0.18)
+        refresh_w = int(canvas_w * 0.16)
+        gap = int(canvas_w * 0.012)
+        unsub_x = canvas_w - right_pad - unsub_w
+        refresh_x = unsub_x - refresh_w - gap
+        self.add(Button(
+            Rect(refresh_x, int(self._head_h * 0.10), refresh_w, btn_h),
+            label_src=lambda: _t("button.refresh"),
+            on_press=self._refresh,
+            font_factor=0.36,
+            color_role="fg_dim",
+            outline_width=2,
+        ))
+        self.add(Button(
+            Rect(unsub_x, int(self._head_h * 0.10), unsub_w, btn_h),
+            label_src=lambda: _t("button.unsubscribe"),
+            on_press=self._unsubscribe,
+            font_factor=0.34,
+            color_role="fg_dim",
+            outline_width=2,
+        ))
+        self._row_widgets: list[Widget] = []
+
+    def open(self, podcast_id: str) -> None:
+        """Called by PodcastListScene right before set_overlay so the
+        episode list knows which feed to render."""
+        self._podcast_id = podcast_id
+
+    def _current_podcast(self):
+        if not self._podcast_id:
+            return None
+        return self._podcasts.get(self._podcast_id)
+
+    def _title_text(self) -> str:
+        p = self._current_podcast()
+        if p is None:
+            return _t("scene.podcast_episodes.title")
+        return p.title or _t("scene.podcast_episodes.title")
+
+    def _refresh(self) -> None:
+        if self._podcast_id:
+            self._podcasts.refresh(self._podcast_id)
+
+    def _unsubscribe(self) -> None:
+        if self._podcast_id:
+            self._podcasts.unsubscribe(self._podcast_id)
+        self._compositor.set_overlay("podcast_list")
+
+    def _play_and_close(self, episode_id: str) -> None:
+        if not self._podcast_id:
+            return
+        self._podcasts.play_episode(self._podcast_id, episode_id)
+        self._compositor.clear_overlay()
+
+    def _rebuild_rows(self) -> None:
+        for w in self._row_widgets:
+            try:
+                self.widgets.remove(w)
+            except ValueError:
+                pass
+        self._row_widgets.clear()
+        body_top = self._head_h + int(self.canvas_h * 0.02)
+        body_h = self.canvas_h - body_top - int(self.canvas_h * 0.02)
+        p = self._current_podcast()
+        if p is None or not p.episodes:
+            empty_key = ("podcast.fetching"
+                         if self._podcasts.is_fetching()
+                         else "podcast.no_episodes")
+            empty = TextWidget(
+                Rect(0, body_top, self.canvas_w, body_h),
+                text_src=lambda k=empty_key: _t(k),
+                font_factor=0.07,
+                color_role="fg_dim",
+                font_role="regular",
+            )
+            self.widgets.append(empty)
+            self._row_widgets.append(empty)
+            return
+        eps = p.episodes[:self.MAX_ROWS]
+        cell_h = body_h // self.MAX_ROWS
+        cur_eid = self._podcasts.current_episode_id
+        for i, e in enumerate(eps):
+            mark = "▶ " if e.id == cur_eid else "  "
+            label = f"{mark}{e.title or e.audio_url}"
+            color_role = "fg_bright" if e.id == cur_eid else "fg_dim"
+            btn = Button(
+                Rect(int(self.canvas_w * 0.04), body_top + i * cell_h,
+                     int(self.canvas_w * 0.92), cell_h - 8),
+                label_src=label,
+                on_press=lambda eid=e.id: self._play_and_close(eid),
+                font_factor=0.28,
+                color_role=color_role,
+            )
+            self.widgets.append(btn)
+            self._row_widgets.append(btn)
+
+    def state_key(self) -> tuple:
+        p = self._current_podcast()
+        if p is None:
+            return (self._podcast_id, None, self._podcasts.is_fetching())
+        return (
+            self._podcast_id,
+            tuple((e.id, e.title) for e in p.episodes),
+            self._podcasts.current_episode_id,
+            self._podcasts.is_fetching(),
+        )
+
+    def render(self) -> Image.Image:
+        self._rebuild_rows()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._rebuild_rows()
+        return super().hit(cx, cy)
+
+
+class PodcastUrlScene(Scene):
+    """On-screen keyboard for pasting a podcast feed URL. Smaller scope
+    than WifiPasswordScene: no masking, no shift-symbol map, but a few
+    URL-tuned symbol keys (: / . - _ ?). OK kicks off a background
+    fetch and shows "Fetching…" until the worker reports back."""
+
+    MAX_URL_LEN = 256
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, podcast_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._podcasts = podcast_service
+        self._url = "https://"
+        self._shift = False
+        # When the user taps OK we fire off the fetch and switch into
+        # _waiting; the next render shows the progress text and the
+        # worker's on_done callback flips us back.
+        self._waiting = False
+        self._error: str = ""
+
+    def inhibit_auto_exit(self) -> bool:
+        # Mid-paste + mid-fetch should not get yanked back to home.
+        return True
+
+    def open(self) -> None:
+        self._url = "https://"
+        self._shift = False
+        self._waiting = False
+        self._error = ""
+
+    # --- mutations ---------------------------------------------------
+
+    def _add(self, c: str) -> None:
+        if len(self._url) >= self.MAX_URL_LEN or self._waiting:
+            return
+        if self._shift and c.isalpha():
+            c = c.upper()
+        self._url += c
+
+    def _backspace(self) -> None:
+        if self._waiting:
+            return
+        self._url = self._url[:-1]
+
+    def _shift_toggle(self) -> None:
+        self._shift = not self._shift
+
+    def _cancel(self) -> None:
+        self._compositor.set_overlay("podcast_list")
+
+    def _submit(self) -> None:
+        if self._waiting or not self._url.strip():
+            return
+        self._waiting = True
+        self._error = ""
+
+        def _done(success: bool, msg: str) -> None:
+            self._waiting = False
+            if success:
+                self._compositor.set_overlay("podcast_list")
+            else:
+                self._error = msg or _t("podcast.fetch_failed")
+
+        self._podcasts.subscribe(self._url.strip(), on_done=_done)
+
+    # --- layout ------------------------------------------------------
+
+    def _build(self) -> None:
+        self.widgets.clear()
+        cw, ch = self.canvas_w, self.canvas_h
+        head_h = int(ch * 0.12)
+        self.add(_back_button(
+            cw, head_h,
+            on_press=self._cancel,
+        ))
+        self.add(_home_button(cw, head_h, self._compositor))
+        self.add(TextWidget(
+            Rect(int(cw * 0.30), 0, int(cw * 0.50), head_h),
+            text_src=lambda: _t("podcast.add_url_prompt"),
+            font_factor=0.45,
+            color_role="fg_dim",
+            font_role="regular",
+        ))
+
+        entry_y = head_h + int(ch * 0.01)
+        entry_h = int(ch * 0.12)
+        if self._waiting:
+            entry_text = _t("podcast.fetching")
+            entry_color = "fg_accent"
+        elif self._error:
+            entry_text = self._error
+            entry_color = "fg_accent"
+        else:
+            entry_text = self._url or _t("podcast.add_url_prompt")
+            entry_color = "fg_bright" if self._url else "fg_dim"
+        self.add(TextWidget(
+            Rect(int(cw * 0.04), entry_y, int(cw * 0.80), entry_h),
+            text_src=entry_text,
+            font_factor=0.45,
+            color_role=entry_color,
+            font_role="regular",
+        ))
+        ok_active = bool(self._url.strip()) and not self._waiting
+        self.add(Button(
+            Rect(int(cw * 0.86), entry_y + int(entry_h * 0.10),
+                 int(cw * 0.12), int(entry_h * 0.80)),
+            label_src=_t("button.ok"),
+            on_press=self._submit,
+            font_factor=0.50,
+            color_role=("fg_bright" if ok_active else "fg_dim"),
+        ))
+
+        kb_top = entry_y + entry_h + int(ch * 0.02)
+        kb_h = ch - kb_top - int(ch * 0.01)
+        row_h = kb_h // 5
+        cell_w = cw // 10
+
+        # Row 1: digits
+        self._row(kb_top, row_h, cell_w, "1234567890", offset=0)
+        # Row 2: qwerty
+        self._row(kb_top + row_h, row_h, cell_w, "qwertyuiop", offset=0)
+        # Row 3: asdfghjkl, slight inset
+        self._row(kb_top + 2 * row_h, row_h, cell_w, "asdfghjkl",
+                  offset=cell_w // 2)
+
+        # Row 4: SHIFT + zxcvbnm + BKSP
+        row_y = kb_top + 3 * row_h
+        sw = int(cell_w * 1.5)
+        self.add(Button(
+            Rect(0, row_y, sw, row_h),
+            label_src=_t("button.shift"),
+            on_press=self._shift_toggle,
+            font_factor=0.30,
+            color_role=("fg_bright" if self._shift else "fg_dim"),
+            outline_width=(3 if self._shift else 1),
+        ))
+        for i, c in enumerate("zxcvbnm"):
+            x = sw + i * cell_w
+            label = c.upper() if self._shift else c
+            self.add(Button(
+                Rect(x, row_y, cell_w, row_h),
+                label_src=label,
+                on_press=lambda ch=c: self._add(ch),
+                font_factor=0.55,
+            ))
+        bk_x = sw + 7 * cell_w
+        self.add(Button(
+            Rect(bk_x, row_y, cw - bk_x, row_h),
+            label_src=_t("button.del"),
+            on_press=self._backspace,
+            font_factor=0.42,
+            color_role="fg_dim",
+        ))
+
+        # Row 5: URL-friendly symbols + space (rarely used in URLs but
+        # left in for the odd case).
+        row_y = kb_top + 4 * row_h
+        symbols = ":/.-_?&=@~+%"
+        # Fit each symbol into a cell of cell_w (12 symbols ≈ 12 cells —
+        # squeeze them slightly so they share the row with space).
+        sym_cell_w = (cw * 7) // (10 * len(symbols))
+        for i, c in enumerate(symbols):
+            self.add(Button(
+                Rect(i * sym_cell_w, row_y, sym_cell_w, row_h),
+                label_src=c,
+                on_press=lambda ch=c: self._add(ch),
+                font_factor=0.48,
+            ))
+        sp_x = len(symbols) * sym_cell_w
+        self.add(Button(
+            Rect(sp_x, row_y, cw - sp_x, row_h),
+            label_src=lambda: _t("button.space"),
+            on_press=lambda: self._add(" "),
+            font_factor=0.36,
+            color_role="fg_dim",
+        ))
+
+    def _row(self, y: int, h: int, cell_w: int, chars: str,
+             *, offset: int) -> None:
+        for i, c in enumerate(chars):
+            x = offset + i * cell_w
+            label = c.upper() if self._shift else c
+            self.add(Button(
+                Rect(x, y, cell_w, h),
+                label_src=label,
+                on_press=lambda ch=c: self._add(ch),
+                font_factor=0.55,
+            ))
+
+    def state_key(self) -> tuple:
+        return (len(self._url), self._shift, self._waiting,
+                bool(self._error))
+
+    def render(self) -> Image.Image:
+        self._build()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._build()
+        return super().hit(cx, cy)
+
+
 class AlarmListScene(Scene):
     """Overlay: list of all configured alarms + ADD. Tap a row to edit it.
 
@@ -3621,12 +4209,16 @@ class AboutScene(Scene):
                         state=mpd_service.status.state)),
         ]
         # Reserve the bottom slice of the body for a "RUN GUIDED TOUR"
-        # button — info rows live above it.
+        # button + a quieter "Audio output ›" link — info rows live above.
+        # The audio-output link is the demoted escape hatch for the
+        # AudioOutputScene picker (no longer surfaced in Settings).
         body_top = head_h + int(canvas_h * 0.04)
         full_body_h = canvas_h - body_top - int(canvas_h * 0.04)
         tour_btn_h = int(canvas_h * 0.10)
-        tour_gap = int(canvas_h * 0.03)
-        body_h = full_body_h - tour_btn_h - tour_gap
+        tour_gap = int(canvas_h * 0.02)
+        link_h = int(canvas_h * 0.06)
+        link_gap = int(canvas_h * 0.01)
+        body_h = full_body_h - tour_btn_h - tour_gap - link_h - link_gap
         # Reserve room for ~8 rows so layout doesn't wobble if we add more.
         cell_h = body_h // max(len(rows), 8)
         for i, src in enumerate(rows):
@@ -3638,6 +4230,20 @@ class AboutScene(Scene):
                 font_factor=0.42,
                 color_role="fg_dim",
             ))
+        # Audio output link — subtle, outline-less so it reads as a link
+        # rather than a tile. Sits between the info rows and the tour
+        # button so power users can spot it without it competing with the
+        # tour CTA.
+        link_y = body_top + body_h + link_gap
+        self.add(Button(
+            Rect(int(canvas_w * 0.06), link_y,
+                 int(canvas_w * 0.88), link_h),
+            label_src=lambda: _t("about.audio_output_link"),
+            on_press=lambda: compositor.set_overlay("audio_output"),
+            outline_width=0,
+            font_factor=0.45,
+            color_role="fg_subtle",
+        ))
         # Tour launcher — a second entry point for the demo, placed
         # here because About is where someone evaluating "what is this
         # thing?" naturally lands.

@@ -788,6 +788,32 @@ def _icon_book(draw, rect: "Rect", theme: Theme, col) -> None:
                   fill=col, width=line_w)
 
 
+def _icon_podcast(draw, rect: "Rect", theme: Theme, col) -> None:
+    cx, cy = rect.cx, rect.cy
+    s = min(rect.w, rect.h) * 0.40
+    w = max(2, int(s * 0.08))
+    # Microphone capsule — vertical pill above centre.
+    mw = s * 0.55
+    top = cy - s * 0.90
+    bot = cy + s * 0.10
+    draw.rounded_rectangle(
+        [cx - mw / 2, top, cx + mw / 2, bot],
+        radius=int(mw / 2), outline=col, width=w)
+    # U-shaped cradle below the capsule (open at top).
+    ur = s * 0.55
+    draw.arc(
+        [cx - ur, bot - ur * 0.30, cx + ur, bot + ur * 1.30],
+        start=0, end=180, fill=col, width=w)
+    # Stem from cradle bottom to base.
+    stem_top = bot + ur * 0.50
+    stem_bot = cy + s * 1.00
+    draw.line([cx, stem_top, cx, stem_bot], fill=col, width=w)
+    # Base bar.
+    base_w = s * 0.60
+    draw.line([cx - base_w, stem_bot, cx + base_w, stem_bot],
+              fill=col, width=w)
+
+
 def _icon_camera(draw, rect: "Rect", theme: Theme, col) -> None:
     cx, cy = rect.cx, rect.cy
     s = min(rect.w, rect.h) * 0.42
@@ -839,6 +865,7 @@ LAUNCHER_ICONS = {
     "book": _icon_book,
     "camera": _icon_camera,
     "gear": _icon_gear,
+    "podcast": _icon_podcast,
 }
 
 

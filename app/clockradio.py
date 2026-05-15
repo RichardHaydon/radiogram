@@ -48,6 +48,8 @@ from brightness_service import BrightnessService
 from i18n_service import I18nService
 from light_service import LightService
 from mpd_service import MPDService
+from podcast_service import PodcastService
+from podcasts import PodcastStore
 from station_service import StationService
 from stations import StationStore
 from theme import THEMES
@@ -64,7 +66,9 @@ from scenes import (
     BluetoothScene, BluetoothSpeakerScene, BrightnessScene,
     DemoIntroScene, DemoSplashScene, DisplaySettingsScene,
     IdleScene, LanguageScene, LauncherScene, MapCenterScene,
-    QuickPanelScene, RadioScene, SettingsScene, StationListScene,
+    PodcastEpisodeListScene, PodcastListScene, PodcastUrlScene,
+    QuickPanelScene, RadioHubScene, RadioScene, SettingsScene,
+    StationListScene,
     ThemeScene, VerseScene, WeatherLocationScene, WeatherScene,
     WifiPasswordScene, WifiScene,
 )
@@ -132,6 +136,7 @@ SWIPE_MAX_S = 0.8
 
 ALARMS_PATH = Path("/var/lib/clockradio/alarms.json")
 STATIONS_PATH = Path("/var/lib/clockradio/stations.json")
+PODCASTS_PATH = Path("/var/lib/clockradio/podcasts.json")
 LOCATION_PATH = Path("/var/lib/clockradio/location.json")
 VERSE_PATH = Path("/var/lib/clockradio/verse.json")
 THEME_PATH = Path("/var/lib/clockradio/theme.json")
@@ -807,6 +812,9 @@ def main() -> int:
     station_store = StationStore(STATIONS_PATH)
     stations = StationService(station_store, mpd)
 
+    podcast_store = PodcastStore(PODCASTS_PATH)
+    podcasts = PodcastService(podcast_store, mpd)
+
     wifi = WifiService()
     wifi.start()
 
@@ -1029,6 +1037,23 @@ def main() -> int:
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, station_service=stations,
     )
+    scenes["radio_hub"] = RadioHubScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, mpd_service=mpd,
+        station_service=stations, alarm_service=alarms,
+    )
+    scenes["podcast_list"] = PodcastListScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, podcast_service=podcasts,
+    )
+    scenes["podcast_episodes"] = PodcastEpisodeListScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, podcast_service=podcasts,
+    )
+    scenes["podcast_url"] = PodcastUrlScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, podcast_service=podcasts,
+    )
     scenes["settings"] = SettingsScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor,
@@ -1179,6 +1204,12 @@ def main() -> int:
     # and the user couldn't see the STOP button until they touched the
     # screen first.
     prev_firing = bool(alarms.firing)
+    # Same edge treatment for the pre-alarm window: when the next alarm
+    # crosses into the PRE_ALARM_WINDOW_S countdown we want the panel
+    # awake *now*, not gradually fading up over TRANSITION_FADE_S from
+    # dim. Otherwise the SKIP-NEXT banner sits on a barely-lit screen
+    # for ~1s and the user reports "the panel woke but I see no cancel".
+    prev_pre_alarm = bool(_scenes_mod._pre_alarm_seconds_left(alarms) >= 0)
     init_b, init_rgb = active_target()
     current_b = float(init_b)
     target_b = init_b
@@ -1219,6 +1250,21 @@ def main() -> int:
                 current_rgb = list(active_rgb)
                 backlight.write(int(current_b))
             prev_firing = firing_now
+            # Same edge treatment for the pre-alarm window: when the
+            # countdown banner first becomes visible (5 min before the
+            # next alarm), snap the panel from dim to full brightness
+            # so the user sees the SKIP NEXT button instantly. Just
+            # bumping target_mode to "active" (below) would only start
+            # a TRANSITION_FADE_S fade, which at 5% active brightness
+            # is too subtle to feel like a wake.
+            pre_alarm_now = bool(
+                _scenes_mod._pre_alarm_seconds_left(alarms) >= 0)
+            if pre_alarm_now and not prev_pre_alarm:
+                last_input_t = time.monotonic()
+                current_b = float(active_b)
+                current_rgb = list(active_rgb)
+                backlight.write(int(current_b))
+            prev_pre_alarm = pre_alarm_now
             for ev in touch.poll():
                 last_input_t = time.monotonic()
                 target_b, target_rgb = active_b, active_rgb
@@ -1285,7 +1331,7 @@ def main() -> int:
             # alarm before it goes off. Active-mode also leaves the
             # SKIP-NEXT button tappable on first contact (no wake-only
             # gesture stealing the press).
-            pre_alarm_active = _scenes_mod._pre_alarm_seconds_left(alarms) >= 0
+            pre_alarm_active = pre_alarm_now
 
             if demo.is_active:
                 # Tour overrides everything: pin the panel to a
