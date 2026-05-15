@@ -35,6 +35,17 @@ class Podcast:
     last_fetched_at: float = 0.0
 
 
+@dataclass
+class SearchResult:
+    """One hit from the iTunes podcast search API. Not persisted —
+    these are session-scoped objects the search UI displays until the
+    user picks one (which then turns into a full Podcast via subscribe)
+    or backs out."""
+    title: str = ""        # collectionName
+    author: str = ""        # artistName
+    feed_url: str = ""
+
+
 def stable_episode_id(podcast_id: str, guid: str, audio_url: str) -> str:
     """A short stable hash so the same episode keeps the same id across
     refreshes — letting "currently playing" highlighting survive a feed

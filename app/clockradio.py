@@ -66,9 +66,9 @@ from scenes import (
     BluetoothScene, BluetoothSpeakerScene, BrightnessScene,
     DemoIntroScene, DemoSplashScene, DisplaySettingsScene,
     IdleScene, LanguageScene, LauncherScene, MapCenterScene,
-    PodcastEpisodeListScene, PodcastListScene, PodcastUrlScene,
-    QuickPanelScene, RadioHubScene, RadioScene, SettingsScene,
-    StationListScene,
+    PodcastEpisodeListScene, PodcastListScene, PodcastSearchScene,
+    PodcastUrlScene, QuickPanelScene, RadioHubScene, RadioScene,
+    SettingsScene, StationListScene,
     ThemeScene, VerseScene, WeatherLocationScene, WeatherScene,
     WifiPasswordScene, WifiScene,
 )
@@ -1051,6 +1051,10 @@ def main() -> int:
         compositor=compositor, podcast_service=podcasts,
     )
     scenes["podcast_url"] = PodcastUrlScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, podcast_service=podcasts,
+    )
+    scenes["podcast_search"] = PodcastSearchScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, podcast_service=podcasts,
     )

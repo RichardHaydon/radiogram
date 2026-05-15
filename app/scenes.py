@@ -1340,13 +1340,17 @@ class SettingsScene(Scene):
         # registered (audio_output overlay) and reachable via the
         # "Audio output" link at the bottom of AboutScene so power
         # users keep their escape hatch.
+        # BLUETOOTH leads — phone pairing is the most-tapped setting
+        # (radio-as-speaker for music), so it gets the top-left slot
+        # where the eye lands first. The trailing empty cell shifts to
+        # the bottom-right of the 3×2 grid.
         tiles = [
-            ((lambda: _t("settings.row.wifi")),
-             lambda: compositor.set_overlay("wifi"),
-             _adapt_settings_icon(SETTINGS_ICONS.get("wifi"))),
             ((lambda: _t("settings.row.bluetooth")),
              lambda: compositor.set_overlay("bluetooth"),
              _adapt_settings_icon(SETTINGS_ICONS.get("bluetooth"))),
+            ((lambda: _t("settings.row.wifi")),
+             lambda: compositor.set_overlay("wifi"),
+             _adapt_settings_icon(SETTINGS_ICONS.get("wifi"))),
             ((lambda: _t("settings.row.display")),
              lambda: compositor.set_overlay("display_settings"),
              _adapt_settings_icon(SETTINGS_ICONS.get("monitor"))),
@@ -3295,24 +3299,36 @@ class PodcastListScene(Scene):
         self.add(_home_button(canvas_w, head_h, compositor))
         self.add(TextWidget(
             Rect(int(canvas_w * 0.30), 0,
-                 int(canvas_w * 0.50), head_h),
+                 int(canvas_w * 0.30), head_h),
             text_src=lambda: _t("scene.podcast_list.title"),
             font_factor=0.55,
             color_role="fg_dim",
         ))
-        # +SUBSCRIBE button on the right of the header — mirrors AlarmList's
-        # +ADD placement so the "make a new one" affordance lives in the
-        # same spot across lists.
-        sub_h = int(head_h * 0.80)
-        sub_w = int(canvas_w * 0.28)
+        # Two-button header right: SEARCH (primary discovery path) and
+        # + URL (power-user escape hatch). SEARCH is the wider /
+        # accent-coloured CTA since most users won't have a feed URL
+        # memorised; URL keeps the raw-feed path accessible.
+        btn_h = int(head_h * 0.80)
         right_pad = int(canvas_w * 0.025)
+        gap = int(canvas_w * 0.012)
+        url_w = int(canvas_w * 0.16)
+        search_w = int(canvas_w * 0.18)
+        url_x = canvas_w - right_pad - url_w
+        search_x = url_x - gap - search_w
         self.add(Button(
-            Rect(canvas_w - right_pad - sub_w, int(head_h * 0.10),
-                 sub_w, sub_h),
-            label_src=lambda: _t("button.subscribe"),
-            on_press=self._open_subscribe,
-            font_factor=0.36,
+            Rect(search_x, int(head_h * 0.10), search_w, btn_h),
+            label_src=lambda: _t("button.search"),
+            on_press=self._open_search,
+            font_factor=0.40,
             color_role="fg_accent",
+            outline_width=2,
+        ))
+        self.add(Button(
+            Rect(url_x, int(head_h * 0.10), url_w, btn_h),
+            label_src=lambda: _t("button.add_url"),
+            on_press=self._open_subscribe,
+            font_factor=0.38,
+            color_role="fg_dim",
             outline_width=2,
         ))
         self._row_widgets: list[Widget] = []
@@ -3322,6 +3338,12 @@ class PodcastListScene(Scene):
         if url_scene is not None:
             url_scene.open()
         self._compositor.set_overlay("podcast_url")
+
+    def _open_search(self) -> None:
+        search_scene = self._compositor.scenes.get("podcast_search")
+        if search_scene is not None:
+            search_scene.open()
+        self._compositor.set_overlay("podcast_search")
 
     def _open_episodes(self, podcast_id: str) -> None:
         ep_scene = self._compositor.scenes.get("podcast_episodes")
@@ -3738,6 +3760,290 @@ class PodcastUrlScene(Scene):
     def state_key(self) -> tuple:
         return (len(self._url), self._shift, self._waiting,
                 bool(self._error))
+
+    def render(self) -> Image.Image:
+        self._build()
+        return super().render()
+
+    def hit(self, cx: float, cy: float) -> Button | None:
+        self._build()
+        return super().hit(cx, cy)
+
+
+class PodcastSearchScene(Scene):
+    """Search-by-name discovery for podcasts. Two phases:
+
+        type     — entry field + on-screen QWERTY + SEARCH button
+        results  — list of hits from iTunes; tap a row to subscribe
+
+    Most users won't have a feed URL memorised, so this is the primary
+    discovery path; PodcastUrlScene stays as the power-user escape hatch
+    for self-hosted feeds not indexed by Apple.
+    """
+
+    PHASE_TYPE = "type"
+    PHASE_RESULTS = "results"
+    MAX_QUERY_LEN = 64
+    MAX_RESULT_ROWS = 5
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, podcast_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._podcasts = podcast_service
+        self._query = ""
+        self._shift = False
+        self._phase = self.PHASE_TYPE
+        self._results: list = []      # list[SearchResult]
+        self._waiting = False
+        self._error_msg = ""
+
+    def inhibit_auto_exit(self) -> bool:
+        # Mid-typing or mid-search shouldn't lose state.
+        return True
+
+    def open(self) -> None:
+        self._query = ""
+        self._shift = False
+        self._phase = self.PHASE_TYPE
+        self._results = []
+        self._waiting = False
+        self._error_msg = ""
+
+    # --- mutations ---------------------------------------------------
+
+    def _add(self, c: str) -> None:
+        if len(self._query) >= self.MAX_QUERY_LEN or self._waiting:
+            return
+        if self._shift and c.isalpha():
+            c = c.upper()
+        self._query += c
+
+    def _backspace(self) -> None:
+        if self._waiting:
+            return
+        self._query = self._query[:-1]
+
+    def _shift_toggle(self) -> None:
+        self._shift = not self._shift
+
+    def _back(self) -> None:
+        # In results phase, BACK returns to the keyboard so the user can
+        # tweak the query. In type phase, BACK exits the search scene.
+        if self._phase == self.PHASE_RESULTS:
+            self._phase = self.PHASE_TYPE
+            return
+        self._compositor.set_overlay("podcast_list")
+
+    def _submit_query(self) -> None:
+        if self._waiting or not self._query.strip():
+            return
+        self._waiting = True
+        self._error_msg = ""
+        self._results = []
+        self._phase = self.PHASE_RESULTS
+
+        def _done(success: bool, hits: list) -> None:
+            self._waiting = False
+            if success:
+                self._results = hits
+            else:
+                self._error_msg = _t("podcast.fetch_failed")
+
+        self._podcasts.search(self._query.strip(), on_done=_done)
+
+    def _pick_result(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._results):
+            return
+        hit = self._results[idx]
+        # Subscribe runs on its own worker; we drop the user back to the
+        # podcast list so they can see the new entry appear (or watch
+        # the "fetching" placeholder during the brief moment between
+        # the search → subscribe handoff and the feed parse).
+        self._podcasts.subscribe(hit.feed_url)
+        self._compositor.set_overlay("podcast_list")
+
+    # --- layout ------------------------------------------------------
+
+    def _build(self) -> None:
+        self.widgets.clear()
+        if self._phase == self.PHASE_RESULTS:
+            self._build_results()
+        else:
+            self._build_type()
+
+    def _build_type(self) -> None:
+        cw, ch = self.canvas_w, self.canvas_h
+        head_h = int(ch * 0.12)
+        self.add(_back_button(cw, head_h, on_press=self._back))
+        self.add(_home_button(cw, head_h, self._compositor))
+        self.add(TextWidget(
+            Rect(int(cw * 0.30), 0, int(cw * 0.50), head_h),
+            text_src=lambda: _t("scene.podcast_search.title"),
+            font_factor=0.50,
+            color_role="fg_dim",
+        ))
+
+        # Entry field + SEARCH button on the right.
+        entry_y = head_h + int(ch * 0.01)
+        entry_h = int(ch * 0.12)
+        if self._query:
+            entry_text = self._query
+            entry_color = "fg_bright"
+        else:
+            entry_text = _t("podcast.search_hint")
+            entry_color = "fg_dim"
+        self.add(TextWidget(
+            Rect(int(cw * 0.04), entry_y, int(cw * 0.66), entry_h),
+            text_src=entry_text,
+            font_factor=0.50,
+            color_role=entry_color,
+            font_role="regular",
+        ))
+        ok_active = bool(self._query.strip())
+        self.add(Button(
+            Rect(int(cw * 0.72), entry_y + int(entry_h * 0.10),
+                 int(cw * 0.26), int(entry_h * 0.80)),
+            label_src=lambda: _t("button.search"),
+            on_press=self._submit_query,
+            font_factor=0.42,
+            color_role=("fg_bright" if ok_active else "fg_dim"),
+            outline_width=2,
+        ))
+
+        # Keyboard — same layout as PodcastUrlScene minus the URL-symbol
+        # row (search queries use letters + digits + space).
+        kb_top = entry_y + entry_h + int(ch * 0.02)
+        kb_h = ch - kb_top - int(ch * 0.01)
+        row_h = kb_h // 5
+        cell_w = cw // 10
+        self._row(kb_top, row_h, cell_w, "1234567890", offset=0)
+        self._row(kb_top + row_h, row_h, cell_w, "qwertyuiop", offset=0)
+        self._row(kb_top + 2 * row_h, row_h, cell_w, "asdfghjkl",
+                  offset=cell_w // 2)
+        # Row 4: SHIFT + zxcvbnm + BKSP
+        row_y = kb_top + 3 * row_h
+        sw = int(cell_w * 1.5)
+        self.add(Button(
+            Rect(0, row_y, sw, row_h),
+            label_src=lambda: _t("button.shift"),
+            on_press=self._shift_toggle,
+            font_factor=0.30,
+            color_role=("fg_bright" if self._shift else "fg_dim"),
+            outline_width=(3 if self._shift else 1),
+        ))
+        for i, c in enumerate("zxcvbnm"):
+            x = sw + i * cell_w
+            label = c.upper() if self._shift else c
+            self.add(Button(
+                Rect(x, row_y, cell_w, row_h),
+                label_src=label,
+                on_press=lambda ch=c: self._add(ch),
+                font_factor=0.55,
+            ))
+        bk_x = sw + 7 * cell_w
+        self.add(Button(
+            Rect(bk_x, row_y, cw - bk_x, row_h),
+            label_src=lambda: _t("button.del"),
+            on_press=self._backspace,
+            font_factor=0.42,
+            color_role="fg_dim",
+        ))
+        # Row 5: full-width space (search queries rarely use anything
+        # else; pasting symbols would only confuse the iTunes query).
+        row_y = kb_top + 4 * row_h
+        self.add(Button(
+            Rect(0, row_y, cw, row_h),
+            label_src=lambda: _t("button.space"),
+            on_press=lambda: self._add(" "),
+            font_factor=0.36,
+            color_role="fg_dim",
+        ))
+
+    def _build_results(self) -> None:
+        cw, ch = self.canvas_w, self.canvas_h
+        head_h = int(ch * 0.14)
+        self.add(_back_button(cw, head_h, on_press=self._back))
+        self.add(_home_button(cw, head_h, self._compositor))
+        # Echo the query into the header so the user knows what's being
+        # shown ("Results: <query>"). Truncates if too long.
+        self.add(TextWidget(
+            Rect(int(cw * 0.30), 0, int(cw * 0.66), head_h),
+            text_src=_t("scene.podcast_results.title",
+                        query=self._query),
+            font_factor=0.45,
+            color_role="fg_dim",
+        ))
+        body_top = head_h + int(ch * 0.02)
+        body_h = ch - body_top - int(ch * 0.02)
+        if self._waiting:
+            self.add(TextWidget(
+                Rect(0, body_top, cw, body_h),
+                text_src=lambda: _t("podcast.searching"),
+                font_factor=0.06,
+                color_role="fg_dim",
+                font_role="regular",
+            ))
+            return
+        if self._error_msg:
+            self.add(TextWidget(
+                Rect(0, body_top, cw, body_h),
+                text_src=self._error_msg,
+                font_factor=0.06,
+                color_role="fg_accent",
+                font_role="regular",
+            ))
+            return
+        if not self._results:
+            self.add(TextWidget(
+                Rect(0, body_top, cw, body_h),
+                text_src=lambda: _t("podcast.no_results"),
+                font_factor=0.06,
+                color_role="fg_dim",
+                font_role="regular",
+            ))
+            return
+        # Track already-subscribed feed URLs so we can mark them with a
+        # check — tapping a check still re-subscribes (and refreshes
+        # episodes), which is the simplest predictable behaviour.
+        existing = {p.feed_url for p in self._podcasts.podcasts}
+        rows = self._results[:self.MAX_RESULT_ROWS]
+        cell_h = body_h // self.MAX_RESULT_ROWS
+        for i, hit in enumerate(rows):
+            mark = "✓ " if hit.feed_url in existing else "  "
+            label = f"{mark}{hit.title or hit.feed_url}"
+            if hit.author:
+                label += f" — {hit.author}"
+            self.add(Button(
+                Rect(int(cw * 0.04), body_top + i * cell_h,
+                     int(cw * 0.92), cell_h - 8),
+                label_src=label,
+                on_press=lambda j=i: self._pick_result(j),
+                font_factor=0.28,
+                color_role="fg_dim",
+            ))
+
+    def _row(self, y: int, h: int, cell_w: int, chars: str,
+             *, offset: int) -> None:
+        for i, c in enumerate(chars):
+            x = offset + i * cell_w
+            label = c.upper() if self._shift else c
+            self.add(Button(
+                Rect(x, y, cell_w, h),
+                label_src=label,
+                on_press=lambda ch=c: self._add(ch),
+                font_factor=0.55,
+            ))
+
+    def state_key(self) -> tuple:
+        return (
+            self._phase,
+            len(self._query),
+            self._shift,
+            self._waiting,
+            len(self._results),
+            bool(self._error_msg),
+        )
 
     def render(self) -> Image.Image:
         self._build()

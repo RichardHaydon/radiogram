@@ -16,16 +16,19 @@ third-party dependency for that.
 """
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import asdict
 from typing import Callable
 
-from podcasts import Podcast, PodcastEpisode, PodcastStore, stable_episode_id
+from podcasts import (Podcast, PodcastEpisode, PodcastStore, SearchResult,
+                      stable_episode_id)
 
 
 # Hard cap on episodes we keep per feed — most podcasts publish hundreds
@@ -34,6 +37,13 @@ MAX_EPISODES_PER_FEED = 60
 FETCH_TIMEOUT_S = 15
 USER_AGENT = "ClockRadio/1.0 (podcast feed reader)"
 _ITUNES_NS = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
+
+# iTunes Search API: no key, returns JSON with feedUrl + collectionName +
+# artistName for each hit. Stable, widely-used endpoint — easier than
+# running our own crawler or paying for Listen Notes. Limit 15 keeps the
+# results page short enough to scroll on a 320px-tall panel.
+ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+SEARCH_LIMIT = 15
 
 
 class PodcastService:
@@ -111,6 +121,59 @@ class PodcastService:
             target=self._subscribe_worker, args=(url, on_done),
             daemon=True, name=f"podcast-fetch-{url[:24]}")
         t.start()
+
+    def search(self, query: str,
+               on_done: Callable[[bool, list[SearchResult]],
+                                 None] | None = None) -> None:
+        """Search iTunes for podcasts matching `query`. Runs on a
+        worker thread; callback receives (success, results). Empty
+        query short-circuits to an empty result list."""
+        q = (query or "").strip()
+        if not q:
+            if on_done:
+                on_done(False, [])
+            return
+        t = threading.Thread(
+            target=self._search_worker, args=(q, on_done),
+            daemon=True, name=f"podcast-search-{q[:20]}")
+        t.start()
+
+    def _search_worker(self, query: str,
+                       on_done: Callable[[bool, list[SearchResult]],
+                                         None] | None) -> None:
+        try:
+            params = {
+                "media": "podcast",
+                "entity": "podcast",
+                "term": query,
+                "limit": SEARCH_LIMIT,
+            }
+            url = ITUNES_SEARCH_URL + "?" + urllib.parse.urlencode(params)
+            req = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
+                raw = resp.read()
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+            results: list[SearchResult] = []
+            for r in data.get("results", []):
+                feed = (r.get("feedUrl") or "").strip()
+                if not feed:
+                    # Some podcasts in the index have no public RSS
+                    # (Apple-exclusive shows). Skip — we can't subscribe.
+                    continue
+                results.append(SearchResult(
+                    title=str(r.get("collectionName", "")).strip(),
+                    author=str(r.get("artistName", "")).strip(),
+                    feed_url=feed,
+                ))
+        except Exception as exc:
+            print(f"podcast search failed for {query!r}: {exc}",
+                  file=sys.stderr, flush=True)
+            if on_done:
+                on_done(False, [])
+            return
+        if on_done:
+            on_done(True, results)
 
     def refresh(self, podcast_id: str,
                 on_done: Callable[[bool, str], None] | None = None) -> None:

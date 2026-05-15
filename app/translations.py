@@ -42,6 +42,8 @@ EN: dict[str, str] = {
     "scene.radio_hub.title": "Radio",
     "scene.podcast_list.title": "Podcasts",
     "scene.podcast_episodes.title": "Episodes",
+    "scene.podcast_search.title": "Search podcasts",
+    "scene.podcast_results.title": "Results: {query}",
     "scene.alarm_list.title": "Alarms",
     "scene.alarm_edit.title.new": "New Alarm",
     "scene.alarm_edit.title.edit": "Edit Alarm",
@@ -116,14 +118,18 @@ EN: dict[str, str] = {
     "button.unskip": "UNSKIP",
     "button.subscribe": "+ SUBSCRIBE",
     "button.unsubscribe": "UNSUBSCRIBE",
+    "button.add_url": "+ URL",
 
     # Radio hub
     "radio_hub.stations": "STATIONS",
     "radio_hub.podcasts": "PODCASTS",
-    "podcast.empty_list": "(no podcasts — tap +SUBSCRIBE)",
+    "podcast.empty_list": "(no podcasts — tap SEARCH)",
     "podcast.no_episodes": "(no episodes yet — try refreshing)",
     "podcast.add_url_prompt": "Paste podcast feed URL",
+    "podcast.search_hint": "Type podcast name",
     "podcast.fetching": "Fetching feed…",
+    "podcast.searching": "Searching…",
+    "podcast.no_results": "(no matches — try a different word)",
     "podcast.fetch_failed": "Couldn't load feed",
 
     # Alarm edit / list
@@ -398,6 +404,8 @@ ES: dict[str, str] = {
     "scene.radio_hub.title": "Radio",
     "scene.podcast_list.title": "Podcasts",
     "scene.podcast_episodes.title": "Episodios",
+    "scene.podcast_search.title": "Buscar podcasts",
+    "scene.podcast_results.title": "Resultados: {query}",
     "scene.alarm_list.title": "Alarmas",
     "scene.alarm_edit.title.new": "Nueva alarma",
     "scene.alarm_edit.title.edit": "Editar alarma",
@@ -472,14 +480,18 @@ ES: dict[str, str] = {
     "button.unskip": "REACTIVAR",
     "button.subscribe": "+ SUSCRIBIR",
     "button.unsubscribe": "QUITAR",
+    "button.add_url": "+ URL",
 
     # Radio hub
     "radio_hub.stations": "EMISORAS",
     "radio_hub.podcasts": "PODCASTS",
-    "podcast.empty_list": "(sin podcasts — pulsa +SUSCRIBIR)",
+    "podcast.empty_list": "(sin podcasts — pulsa BUSCAR)",
     "podcast.no_episodes": "(sin episodios — pulsa recargar)",
     "podcast.add_url_prompt": "Pega URL del podcast",
+    "podcast.search_hint": "Escribe nombre del podcast",
     "podcast.fetching": "Cargando feed…",
+    "podcast.searching": "Buscando…",
+    "podcast.no_results": "(sin resultados — prueba otra palabra)",
     "podcast.fetch_failed": "No se pudo cargar el feed",
 
     # Alarm
@@ -745,6 +757,8 @@ NO: dict[str, str] = {
     "scene.radio_hub.title": "Radio",
     "scene.podcast_list.title": "Podkaster",
     "scene.podcast_episodes.title": "Episoder",
+    "scene.podcast_search.title": "Søk podkast",
+    "scene.podcast_results.title": "Resultater: {query}",
     "scene.alarm_list.title": "Alarmer",
     "scene.alarm_edit.title.new": "Ny alarm",
     "scene.alarm_edit.title.edit": "Rediger alarm",
@@ -819,14 +833,18 @@ NO: dict[str, str] = {
     "button.unskip": "ANGRE",
     "button.subscribe": "+ ABONNER",
     "button.unsubscribe": "AVSLUTT",
+    "button.add_url": "+ URL",
 
     # Radio hub
     "radio_hub.stations": "STASJONER",
     "radio_hub.podcasts": "PODKASTER",
-    "podcast.empty_list": "(ingen podkaster — trykk +ABONNER)",
+    "podcast.empty_list": "(ingen podkaster — trykk SØK)",
     "podcast.no_episodes": "(ingen episoder — last inn på nytt)",
     "podcast.add_url_prompt": "Lim inn podkast-URL",
+    "podcast.search_hint": "Skriv navn på podkast",
     "podcast.fetching": "Henter feed…",
+    "podcast.searching": "Søker…",
+    "podcast.no_results": "(ingen treff — prøv et annet ord)",
     "podcast.fetch_failed": "Kunne ikke hente feed",
 
     # Alarm
