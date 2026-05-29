@@ -95,6 +95,12 @@ install -m 0755 -o root -g root \
     /usr/local/sbin/clockradio-mpd-autoconfig
 install -m 0644 "$SRC_DIR/systemd/clockradio-mpd-autoconfig.service" \
     /etc/systemd/system/clockradio-mpd-autoconfig.service
+# Hot-plug rule: re-run autoconfig when a USB sound card appears or
+# disappears so swapping the DAC on a running system Just Works
+# instead of requiring a reboot.
+install -m 0644 "$SRC_DIR/setup/99-clockradio-audio.rules" \
+    /etc/udev/rules.d/99-clockradio-audio.rules
+udevadm control --reload-rules
 systemctl daemon-reload
 systemctl enable clockradio-mpd-autoconfig.service
 

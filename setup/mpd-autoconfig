@@ -14,9 +14,17 @@ Realtek → "Audio") and different mixer controls (PCM, Speaker, …).
 A DAC swap previously meant manually editing mpd.conf and bouncing
 the daemon. This helper makes the swap self-healing on boot.
 
-Designed to run from a systemd unit ordered Before=mpd.service so
-the live MPD instance always sees a config that matches the live
-hardware. The unit restarts MPD if (and only if) the file changed.
+Designed to run in two contexts:
+- At boot via the clockradio-mpd-autoconfig.service systemd unit
+  (ordered Before=mpd.service) so MPD starts with a fresh config.
+- On hot-plug via the 99-clockradio-audio.rules udev rule fired
+  by ACTION=="add|remove" on a USB sound card.
+
+When the config is rewritten and MPD is currently active, the helper
+bounces MPD and refreshes the bluealsa-aplay sink route so phone-as-
+speaker keeps tracking the new card too. Doing this here (rather than
+in the systemd unit's ExecStartPost=) avoids relying on $EXIT_STATUS
+which isn't reliably exported across distros.
 """
 from __future__ import annotations
 
@@ -27,6 +35,7 @@ from pathlib import Path
 
 
 MPD_CONF = Path("/etc/mpd.conf")
+BT_HELPER = Path("/usr/local/sbin/clockradio-bt-output")
 # Pi onboard / HDMI outputs we deliberately skip — we want to find
 # the user-added USB DAC or I2S HAT, not fall back to the 3.5 mm jack
 # (clicky, no audible output on the Pi 3) or HDMI (no speakers wired).
@@ -153,9 +162,30 @@ def main() -> int:
     tmp.chmod(0o644)
     tmp.replace(MPD_CONF)
     print(f"mpd-autoconfig: rewrote audio_output for card='{card_name}' "
-          f"mixer='{mixer}' (mpd restart recommended)")
-    # Exit code 10 signals "config changed" so the systemd unit (or a
-    # caller wrapper) can decide to restart mpd. 0 means "no change".
+          f"mixer='{mixer}'")
+
+    # If MPD is already running (i.e. we got here via hot-plug, not via
+    # the Before=mpd.service boot path), bounce it so it picks up the
+    # new device. systemctl is-active exits 0 iff active.
+    mpd_active = subprocess.run(
+        ["systemctl", "is-active", "--quiet", "mpd"]).returncode == 0
+    if mpd_active:
+        subprocess.run(["systemctl", "try-restart", "mpd"], check=False)
+        print("mpd-autoconfig: restarted mpd")
+
+    # Keep the bluealsa-aplay sink route in sync with MPD's primary
+    # output so a paired phone keeps playing to the new card too.
+    # The bt helper is installed by the same bootstrap, but be defensive
+    # — if it's missing we just skip (BT routing is non-critical).
+    if BT_HELPER.exists():
+        subprocess.run(
+            [str(BT_HELPER), "set-sink-route",
+             f"hw:CARD={card_name},DEV=0"],
+            check=False)
+        print(f"mpd-autoconfig: updated bluealsa route to card='{card_name}'")
+
+    # Exit code 10 retained for backwards compat with any external
+    # caller that checks $? — the systemd unit no longer relies on it.
     return 10
 
 

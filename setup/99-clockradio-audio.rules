@@ -1,0 +1,16 @@
+# Hot-plug self-healing for the MPD audio output.
+#
+# When a sound card appears or disappears, fire the auto-config service
+# so /etc/mpd.conf gets rewritten to match the currently-present card
+# (and the helper bounces MPD if it's active). Without this, plugging
+# a different USB DAC into a running system leaves MPD pointing at a
+# now-nonexistent hw:CARD=<old_name> and the radio goes silent until
+# the next reboot.
+#
+# Matches: any sound-class device with a card[0-9]* kernel name. ALSA
+# fires several events when a USB card is inserted (the card device,
+# its control device, each PCM substream); we filter to just the card
+# node to avoid running the helper several times back-to-back. The
+# helper is idempotent so a duplicate run is harmless either way.
+ACTION=="add|remove", SUBSYSTEM=="sound", KERNEL=="card[0-9]*", \
+    RUN+="/usr/bin/systemctl --no-block start clockradio-mpd-autoconfig.service"

@@ -10,12 +10,13 @@ ConditionPathExists=/etc/mpd.conf
 
 [Service]
 Type=oneshot
-# Exit code 10 from the helper means "config rewritten" — bounce
-# mpd so the change takes effect. Exit code 0 means "nothing to
-# do" and we leave mpd alone (next dependant unit fires normally).
+# Exit code 10 is the legacy "config rewritten" signal from the helper.
+# The helper now handles the MPD restart itself when it detects MPD is
+# already active (i.e. udev-triggered hot-plug path) so the systemd
+# unit doesn't need an ExecStartPost — that path was brittle because
+# $EXIT_STATUS isn't reliably exported to ExecStartPost across distros.
 SuccessExitStatus=0 10
 ExecStart=/usr/local/sbin/clockradio-mpd-autoconfig
-ExecStartPost=/bin/sh -c 'test $EXIT_STATUS = 10 && systemctl try-restart mpd || true'
 RemainAfterExit=no
 
 [Install]
