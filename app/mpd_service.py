@@ -31,7 +31,7 @@ except ImportError:
 
 POLL_INTERVAL_S = 2.0
 CMD_WAIT_S = 0.15
-VOL_STEP = 10
+VOL_STEP = 3
 VOL_WRAP_FROM = 100
 VOL_WRAP_TO = 10
 # Watchdog: when MPD wedges (TCP open but never answers), the client

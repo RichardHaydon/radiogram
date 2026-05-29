@@ -488,11 +488,17 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
         font_factor=0.42,
         color_role="fg_bright",
     ))
+    # VOL−/+ are repeatable so one tap = one small step (VOL_STEP) and a
+    # held press ramps the volume continuously. Per-tap was bumped down
+    # from 10 to 3 to give finer control near the comfortable bedside
+    # listening range; the hold-to-ramp behaviour keeps the bulk-change
+    # path fast enough that the smaller step doesn't feel sluggish.
     scene.add(Button(
         Rect(x_offset + play_w, foot_y, minus_w, foot_h),
         label_src=lambda: _t("button.vol_down"),
         on_press=lambda: mpd_service.command("vol_down"),
         font_factor=0.42,
+        repeatable=True,
     ))
     scene.add(TextWidget(
         Rect(x_offset + play_w + minus_w, foot_y, readout_w, foot_h),
@@ -509,6 +515,7 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
         label_src=lambda: _t("button.vol_up"),
         on_press=lambda: mpd_service.command("vol_up"),
         font_factor=0.42,
+        repeatable=True,
     ))
 
 
@@ -790,6 +797,7 @@ def _add_bt_transport_footer(scene: "Scene", bluetooth_service,
         label_src=lambda: _t("button.vol_down"),
         on_press=lambda: mpd_service.command("vol_down"),
         font_factor=0.42,
+        repeatable=True,
     ))
     scene.add(TextWidget(
         Rect(x_offset + play_w + minus_w, foot_y, readout_w, foot_h),
@@ -803,6 +811,7 @@ def _add_bt_transport_footer(scene: "Scene", bluetooth_service,
         label_src=lambda: _t("button.vol_up"),
         on_press=lambda: mpd_service.command("vol_up"),
         font_factor=0.42,
+        repeatable=True,
     ))
 
 
