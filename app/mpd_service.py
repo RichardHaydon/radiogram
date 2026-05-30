@@ -34,6 +34,28 @@ CMD_WAIT_S = 0.15
 VOL_STEP = 3
 VOL_WRAP_FROM = 100
 VOL_WRAP_TO = 10
+
+
+def _vol_step(current: int, direction: int) -> int:
+    """Variable step size for a single VOL−/+ tap.
+
+    PCM volume is linear (a 2-unit bump from 50→52 is barely audible)
+    but perceived loudness is logarithmic — that same 2-unit bump from
+    2→4 is a doubling in amplitude and feels like a big jump. To make
+    the buttons feel uniformly fine-grained at every level, smaller
+    steps are used near zero where perceived deltas are largest.
+
+    `direction` is +1 for VOL+ and -1 for VOL− so we pick the step
+    based on the level we're moving INTO, not away from — that gives
+    a natural slow-down as the user approaches zero from above and
+    avoids overshooting past the small-step band on the way down.
+    """
+    anchor = current if direction > 0 else max(0, current - 1)
+    if anchor < 10:
+        return 1
+    if anchor < 30:
+        return 2
+    return VOL_STEP
 # Watchdog: when MPD wedges (TCP open but never answers), the client
 # socket times out and we keep retrying. After this many consecutive
 # connect failures (≈ 8 s of dead silence) we ask systemd to restart
@@ -238,10 +260,10 @@ class MPDService:
             client.setvol(new)
         elif cmd == "vol_up":
             cur = int(client.status().get("volume", 50))
-            client.setvol(min(100, cur + VOL_STEP))
+            client.setvol(min(100, cur + _vol_step(cur, +1)))
         elif cmd == "vol_down":
             cur = int(client.status().get("volume", 50))
-            client.setvol(max(0, cur - VOL_STEP))
+            client.setvol(max(0, cur - _vol_step(cur, -1)))
 
     def _run(self) -> None:
         client = None

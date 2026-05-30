@@ -40,10 +40,6 @@ BT_HELPER = Path("/usr/local/sbin/clockradio-bt-output")
 # the user-added USB DAC or I2S HAT, not fall back to the 3.5 mm jack
 # (clicky, no audible output on the Pi 3) or HDMI (no speakers wired).
 ONBOARD_CARDS = ("Headphones", "vc4hdmi", "bcm2835")
-# Preferred mixer names in priority order. Different chips expose
-# different mixer-control labels — we look for a known good one
-# first, then fall back to any control that has a Playback channel.
-PREFERRED_MIXERS = ("PCM", "Speaker", "Master", "Headphone")
 
 
 def list_playback_cards() -> list[tuple[int, str]]:
@@ -74,49 +70,27 @@ def pick_target_card() -> tuple[int, str] | None:
     return None
 
 
-def amixer(card: str, *args: str) -> str:
-    """Run amixer with -c <card> and capture stdout. Empty string on
-    any failure — callers treat empty as 'unknown / not present'."""
-    try:
-        return subprocess.check_output(
-            ["amixer", "-c", card, *args],
-            text=True, stderr=subprocess.DEVNULL)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return ""
+def render_block(card: str) -> str:
+    """Build the audio_output stanza for `card`.
 
-
-def list_mixers(card: str) -> list[str]:
-    out = amixer(card, "scontrols")
-    return re.findall(r"'([^']+)'", out)
-
-
-def has_playback(card: str, mixer: str) -> bool:
-    return "Playback" in amixer(card, "sget", mixer)
-
-
-def pick_mixer(card: str) -> str | None:
-    mixers = list_mixers(card)
-    for pref in PREFERRED_MIXERS:
-        if pref in mixers and has_playback(card, pref):
-            return pref
-    # Some cards expose only non-standard names — accept any control
-    # that has a Playback channel rather than giving up.
-    for m in mixers:
-        if has_playback(card, m):
-            return m
-    return None
-
-
-def render_block(card: str, mixer: str) -> str:
+    mixer_type is "software" rather than "hardware" because cheap USB
+    DAC chips (Jieli, C-Media, etc.) typically expose only ~16–32
+    discrete hardware mixer buckets — MPD's setvol 1, 2, 3, ... all
+    round to the same bucket at the low end, making fine-grained
+    bedside-volume control impossible. Software mixer scales PCM in
+    the daemon, sends full-scale audio to the DAC, and gives a true
+    1% step everywhere. The CPU cost on a Pi 3 is negligible (a few
+    multiplies per buffer); the alarm volume ramp also benefits from
+    a smoother fade-in. If a card is later swapped in that has a
+    truly high-resolution hardware mixer (and someone misses the
+    knob-style behaviour), this is the single line to revisit.
+    """
     return (
         'audio_output {\n'
         '    type            "alsa"\n'
         '    name            "Clockradio Output"\n'
         f'    device          "hw:CARD={card},DEV=0"\n'
-        '    mixer_type      "hardware"\n'
-        f'    mixer_device    "hw:CARD={card}"\n'
-        f'    mixer_control   "{mixer}"\n'
-        '    mixer_index     "0"\n'
+        '    mixer_type      "software"\n'
         '}'
     )
 
@@ -138,11 +112,6 @@ def main() -> int:
               "leaving mpd.conf alone", file=sys.stderr)
         return 0
     _idx, card_name = card
-    mixer = pick_mixer(card_name)
-    if mixer is None:
-        print(f"mpd-autoconfig: no usable mixer on card '{card_name}'; "
-              "leaving mpd.conf alone", file=sys.stderr)
-        return 0
 
     try:
         current = MPD_CONF.read_text()
@@ -150,11 +119,10 @@ def main() -> int:
         print(f"mpd-autoconfig: {MPD_CONF} not found", file=sys.stderr)
         return 2
 
-    new_block = render_block(card_name, mixer)
+    new_block = render_block(card_name)
     rewritten = replace_audio_output(current, new_block)
     if rewritten == current:
-        print(f"mpd-autoconfig: already configured for card='{card_name}' "
-              f"mixer='{mixer}'")
+        print(f"mpd-autoconfig: already configured for card='{card_name}'")
         return 0
 
     tmp = MPD_CONF.with_suffix(".autoconfig.tmp")
@@ -162,16 +130,24 @@ def main() -> int:
     tmp.chmod(0o644)
     tmp.replace(MPD_CONF)
     print(f"mpd-autoconfig: rewrote audio_output for card='{card_name}' "
-          f"mixer='{mixer}'")
+          "(software mixer)")
 
     # If MPD is already running (i.e. we got here via hot-plug, not via
-    # the Before=mpd.service boot path), bounce it so it picks up the
-    # new device. systemctl is-active exits 0 iff active.
+    # the Before=mpd.service boot path), queue a restart so it picks up
+    # the new device. --no-block is essential: this helper's systemd
+    # unit declares Before=mpd.service, so a blocking try-restart from
+    # inside the helper deadlocks against its own ordering — systemd
+    # waits for the autoconfig unit to finish before starting mpd, but
+    # the autoconfig unit is itself blocking on the mpd restart job.
+    # --no-block returns immediately and lets systemd dispatch the
+    # restart once we exit.
     mpd_active = subprocess.run(
         ["systemctl", "is-active", "--quiet", "mpd"]).returncode == 0
     if mpd_active:
-        subprocess.run(["systemctl", "try-restart", "mpd"], check=False)
-        print("mpd-autoconfig: restarted mpd")
+        subprocess.run(
+            ["systemctl", "--no-block", "try-restart", "mpd"],
+            check=False)
+        print("mpd-autoconfig: queued mpd restart")
 
     # Keep the bluealsa-aplay sink route in sync with MPD's primary
     # output so a paired phone keeps playing to the new card too.
