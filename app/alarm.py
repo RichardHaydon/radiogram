@@ -26,6 +26,11 @@ DAY_NAMES_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 DAY_KEYS_SHORT = ("day.short.mon", "day.short.tue", "day.short.wed",
                   "day.short.thu", "day.short.fri", "day.short.sat",
                   "day.short.sun")
+# Display order for day pickers and labels. Storage bit i still maps
+# to Python's d.weekday() (Mon=0..Sun=6) so existing alarms.json keeps
+# working — only the UI walks the week starting from Sunday. The tuple
+# is bit-indices in display order: Sun, Mon, Tue, Wed, Thu, Fri, Sat.
+DAY_DISPLAY_ORDER = (6, 0, 1, 2, 3, 4, 5)
 ALL_WEEKDAYS = 0b0011111  # Mon..Fri
 ALL_WEEKEND = 0b1100000   # Sat..Sun
 ALL_DAYS = 0b1111111
@@ -61,7 +66,7 @@ def days_label(days: int) -> str:
             return EN["days.weekend"]
         if days == ALL_DAYS:
             return EN["days.every_day"]
-        return " ".join(EN[DAY_KEYS_SHORT[i]] for i in range(7)
+        return " ".join(EN[DAY_KEYS_SHORT[i]] for i in DAY_DISPLAY_ORDER
                         if days & (1 << i))
     if days == 0:
         return _t("days.once")
@@ -71,7 +76,7 @@ def days_label(days: int) -> str:
         return _t("days.weekend")
     if days == ALL_DAYS:
         return _t("days.every_day")
-    return " ".join(_t(DAY_KEYS_SHORT[i]) for i in range(7)
+    return " ".join(_t(DAY_KEYS_SHORT[i]) for i in DAY_DISPLAY_ORDER
                     if days & (1 << i))
 
 

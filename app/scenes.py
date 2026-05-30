@@ -17,7 +17,7 @@ from datetime import datetime
 
 from PIL import Image, ImageDraw
 
-from alarm import Alarm, days_label
+from alarm import Alarm, DAY_DISPLAY_ORDER, days_label
 from theme import Theme, color
 from widgets import (
     AppTile, BellIconWidget, Button, CheckboxRow, ClockWidget,
@@ -399,45 +399,51 @@ def _format_skip_button(alarm_service) -> str:
 
 def _add_pre_alarm_banner(scene: "Scene", alarm_service,
                           canvas_w: int, canvas_h: int) -> None:
-    """Slim top-of-screen banner that fades in when the next alarm is
-    within PRE_ALARM_WINDOW_S: countdown text on the left, SKIP-NEXT
-    button on the right. Both widgets are visually empty outside the
-    countdown window, so the banner contributes nothing to the layout
-    99% of the time. Shared by IdleScene / RadioScene /
-    BluetoothPlayingScene so every home variant offers the same
-    "cancel the alarm before it goes off" affordance.
+    """Center-screen pre-alarm card: when the next alarm is within
+    PRE_ALARM_WINDOW_S, paint a large countdown + a big SKIP NEXT
+    button vertically centred on the home scene. Both widgets are
+    visually empty outside the countdown window, so the card
+    contributes nothing to the layout 99% of the time. Shared by
+    IdleScene / RadioScene / BluetoothPlayingScene so every home
+    variant offers the same "cancel the alarm before it goes off"
+    affordance.
 
-    Sized for bedside readability: previously the band was 9% of canvas
-    with a 0.42 font factor, which on a 320px panel produced a ~9px
-    SKIP NEXT label and was the cause of "the panel wakes but I see
-    no cancel". 13% band + larger fonts brings the button into the
-    same legibility tier as the alarm pill in the footer."""
-    banner_h = int(canvas_h * 0.13)
-    btn_w = int(canvas_w * 0.26)
-    text_w = canvas_w - btn_w - int(canvas_w * 0.04)
-    text_x = int(canvas_w * 0.02)
-    btn_x = text_x + text_w + int(canvas_w * 0.02)
+    A slim top banner (the previous design) was too easy to miss in a
+    glanced state — half-asleep at 06:25 the eye lands on the clock,
+    not the strip of text above it. The card sits dead-centre over the
+    clock area so the SKIP affordance is the first thing the user
+    sees while the countdown is open."""
+    # Card geometry: ~85% wide, ~50% tall, vertically centred.
+    card_w = int(canvas_w * 0.86)
+    card_x = (canvas_w - card_w) // 2
+    text_h = int(canvas_h * 0.18)
+    btn_h = int(canvas_h * 0.22)
+    gap = int(canvas_h * 0.02)
+    block_h = text_h + gap + btn_h
+    text_y = (canvas_h - block_h) // 2
+    btn_y = text_y + text_h + gap
     # Countdown text: accent colour + halo so it reads cleanly over the
     # world-map background and the user's eye lands on it the moment
     # they glance at the panel.
     scene.add(TextWidget(
-        Rect(text_x, 0, text_w, banner_h),
+        Rect(card_x, text_y, card_w, text_h),
         text_src=lambda: _format_pre_alarm_banner(alarm_service),
-        font_factor=0.60,
+        font_factor=0.55,
         color_role="fg_accent",
         halo=True,
     ))
     # SKIP NEXT: toggles skip_next on the next-to-fire alarm. While the
-    # banner is hidden the label is empty, so Scene.hit() skips it (see
-    # the IconButton-exempt branch in the base hit() implementation).
+    # card is hidden the label is empty, so Scene.hit() skips it (see
+    # the IconButton-exempt branch in the base hit() implementation),
+    # and Button.render early-exits on empty labels so we don't paint
+    # a meaningless rectangle 99% of the time.
     scene.add(Button(
-        Rect(btn_x, int(banner_h * 0.08),
-             btn_w, int(banner_h * 0.84)),
+        Rect(card_x, btn_y, card_w, btn_h),
         label_src=lambda: _format_skip_button(alarm_service),
         on_press=lambda: alarm_service.toggle_skip_next(),
-        font_factor=0.50,
+        font_factor=0.45,
         color_role="fg_accent",
-        outline_width=2,
+        outline_width=3,
     ))
 
 
@@ -4325,16 +4331,19 @@ class AlarmEditScene(Scene):
             repeatable=True,
         ))
 
-        # Day toggles
+        # Day toggles. Display order is Sun..Sat (DAY_DISPLAY_ORDER),
+        # but each cell still toggles its underlying bit-index from the
+        # storage convention (Mon=0..Sun=6 via d.weekday()) so existing
+        # alarms.json doesn't need migration.
         days_y = time_top + time_h + int(ch * 0.02)
         days_h = int(ch * 0.16)
         cell_w = cw // 7
-        for i, key in enumerate(self.DAY_LETTER_KEYS):
-            on = bool(d.days & (1 << i))
+        for slot, bit_idx in enumerate(DAY_DISPLAY_ORDER):
+            on = bool(d.days & (1 << bit_idx))
             self.add(Button(
-                Rect(i * cell_w, days_y, cell_w, days_h),
-                label_src=_t(key),
-                on_press=lambda i=i: self._toggle_day(i),
+                Rect(slot * cell_w, days_y, cell_w, days_h),
+                label_src=_t(self.DAY_LETTER_KEYS[bit_idx]),
+                on_press=lambda i=bit_idx: self._toggle_day(i),
                 font_factor=0.55,
                 color_role=("fg_bright" if on else "fg_dim"),
                 outline_width=(3 if on else 1),
