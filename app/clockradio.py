@@ -402,16 +402,6 @@ class TouchReader:
                         self._press_x = self._press_y = None
         return events
 
-    def discard_press(self) -> None:
-        """Drop the in-flight press tracking. Subsequent held_position()
-        calls return None until the next finger-down, and the eventual
-        BTN_TOUCH release skips emitting a tap/swipe (the classifier
-        early-outs when _press_x is None). Used by the wake-from-dim
-        path so a touch that only wakes the screen can't also act on
-        whatever button it happened to land on."""
-        self._press_x = None
-        self._press_y = None
-
     def held_position(self) -> tuple[int, int, float] | None:
         """Stable-hold introspection: returns (cx, cy, held_seconds)
         if the finger is currently down and hasn't drifted beyond
@@ -770,9 +760,9 @@ class Compositor:
         btn._pressed = True
         try:
             # Press-flash frame respects the latest rgb-scale so a tap
-            # in dim mode (after the wake-only first contact) doesn't
-            # blast a fully-bright flash onto the dark-adapted user,
-            # and a tap with night-red on stays red.
+            # with night-red on stays red. A first press from a dim
+            # panel snaps the scale to active before dispatch (see the
+            # touch loop in main), so that flash paints bright.
             self.display.present(scene.render(), self._rgb_scale)
         except Exception as exc:
             print(f"press-flash render: {exc}",
@@ -1272,39 +1262,25 @@ def main() -> int:
             for ev in touch.poll():
                 last_input_t = time.monotonic()
                 target_b, target_rgb = active_b, active_rgb
-                # Wake-only: a touch on a dim panel should bring the
-                # backlight up without forwarding the press to the
-                # current scene — landing in the launcher because the
-                # tap happened to hit empty area is jarring at 3am.
-                # The previous heuristic compared backlight + red
-                # channel against fractions of the active level, which
-                # silently failed when the user's active brightness
-                # was already low (5%) and the dim path used the
-                # software multiplier (resolves to current_b == 1,
-                # current_rgb[0] > 0.5 — both above the thresholds).
-                # The previous-frame mode is the authoritative signal.
-                was_dim = (prev_mode == "dim")
-                if was_dim:
-                    # Snap to active immediately on wake — the gentle
-                    # fade is fine for active→dim but going dim→active
-                    # via fade at low active brightness (5%) made the
-                    # change too subtle to register as "the panel
-                    # responded to my tap". Snap means the user sees
-                    # the screen change on the same frame they touched
-                    # it; they then know they can tap again to act.
+                # No "tap once to wake, tap again to act" step: the dim
+                # backlight still leaves every button legible, so the
+                # first press from a dim panel both wakes the screen AND
+                # fires whatever it lands on. We only special-case the
+                # brightness here, not the dispatch — snap the backlight
+                # and colour straight to the active level so the panel is
+                # at full visibility on the same frame the user touched
+                # it (the gentle dim→active fade is too subtle at low
+                # active brightness, e.g. 5%, to read as "it responded").
+                # Pushing the active rgb-scale into the compositor up
+                # front keeps the press-flash bright even for a fast tap
+                # whose down+up land in the same poll batch (otherwise
+                # the flash would paint at the previous dim/night-red
+                # scale for one frame).
+                if prev_mode == "dim":
                     current_b = float(active_b)
                     current_rgb = list(active_rgb)
                     backlight.write(int(current_b))
-                    # Discard the in-flight press so neither the hold
-                    # path (which would mark a button visually pressed
-                    # during the fade-up) nor the trailing tap on
-                    # release fires. Without this the user only got
-                    # wake-only behaviour for very fast taps — a press
-                    # held past ~half the fade let was_dim flip to
-                    # False, and the release reached the underlying
-                    # button.
-                    touch.discard_press()
-                    continue
+                    compositor._rgb_scale = active_rgb
                 if ev.kind == "tap":
                     compositor.dispatch_tap(ev.cx, ev.cy)
                 elif ev.kind == "swipe":
@@ -1332,9 +1308,9 @@ def main() -> int:
             # IdleScene / RadioScene / BluetoothPlayingScene would
             # render correctly but be invisible against a dim panel —
             # so the user wouldn't see they have a chance to skip the
-            # alarm before it goes off. Active-mode also leaves the
-            # SKIP-NEXT button tappable on first contact (no wake-only
-            # gesture stealing the press).
+            # alarm before it goes off. Active-mode keeps the panel at
+            # full brightness for the whole window so the large SKIP-NEXT
+            # card stays clearly readable and tappable on first contact.
             pre_alarm_active = pre_alarm_now
 
             if demo.is_active:
