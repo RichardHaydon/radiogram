@@ -1313,6 +1313,19 @@ def main() -> int:
             # card stays clearly readable and tappable on first contact.
             pre_alarm_active = pre_alarm_now
 
+            # Audible playback also pins the panel at active
+            # brightness: a radio that is audibly on should look on.
+            # Covers MPD actually playing (radio / podcast / firing
+            # alarm) and a phone streaming over Bluetooth — the same
+            # condition pick_scene uses to show the BT-playing home.
+            # Deliberately NOT mpd.status.active: a *paused* stream is
+            # silent, and a silent bedside panel should dim as usual.
+            audio_playing = (
+                mpd.status.state == "play"
+                or bool(bluetooth.status.streaming_from)
+                or (bool(bluetooth.status.connected_phone)
+                    and bluetooth.status.media_status == "playing"))
+
             if demo.is_active:
                 # Tour overrides everything: pin the panel to a
                 # showcase level and out of the dim path. The mode
@@ -1325,6 +1338,7 @@ def main() -> int:
                 target_rgb = (sw, sw, sw)
                 target_mode = "demo"
             elif (not pre_alarm_active
+                  and not audio_playing
                   and time.monotonic() - last_input_t > IDLE_TIMEOUT_S):
                 target_b, target_rgb = idle_dim_target()
                 target_mode = "dim"
