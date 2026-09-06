@@ -49,6 +49,7 @@ EN: dict[str, str] = {
     "scene.alarm_edit.title.edit": "Edit Alarm",
     "scene.about.title": "About",
     "scene.brightness.title": "Brightness",
+    "scene.volume.title": "Volume",
     "scene.audio_output.title": "Audio Output",
     "scene.background.title": "Background",
     "scene.map_center.title": "Map Centre",
@@ -64,6 +65,7 @@ EN: dict[str, str] = {
     "settings.row.language": "LANGUAGE",
     "settings.row.background": "BACKGROUND",
     "settings.row.brightness": "BRIGHTNESS",
+    "settings.row.volume": "VOLUME",
     "settings.row.demo": "DEMO",
     "settings.row.about": "ABOUT",
 
@@ -413,6 +415,7 @@ ES: dict[str, str] = {
     "scene.alarm_edit.title.edit": "Editar alarma",
     "scene.about.title": "Acerca de",
     "scene.brightness.title": "Brillo",
+    "scene.volume.title": "Volumen",
     "scene.audio_output.title": "Salida de audio",
     "scene.background.title": "Fondo",
     "scene.map_center.title": "Centro del mapa",
@@ -428,6 +431,7 @@ ES: dict[str, str] = {
     "settings.row.language": "IDIOMA",
     "settings.row.background": "FONDO",
     "settings.row.brightness": "BRILLO",
+    "settings.row.volume": "VOLUMEN",
     "settings.row.demo": "DEMO",
     "settings.row.about": "INFO",
 
@@ -768,6 +772,7 @@ NO: dict[str, str] = {
     "scene.alarm_edit.title.edit": "Rediger alarm",
     "scene.about.title": "Om",
     "scene.brightness.title": "Lysstyrke",
+    "scene.volume.title": "Volum",
     "scene.audio_output.title": "Lydutgang",
     "scene.background.title": "Bakgrunn",
     "scene.map_center.title": "Kartsentrum",
@@ -783,6 +788,7 @@ NO: dict[str, str] = {
     "settings.row.language": "SPRAK",
     "settings.row.background": "BAKGRUNN",
     "settings.row.brightness": "LYSSTYRKE",
+    "settings.row.volume": "VOLUM",
     "settings.row.demo": "DEMO",
     "settings.row.about": "OM",
 

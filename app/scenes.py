@@ -500,31 +500,27 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
                           canvas_w: int, canvas_h: int,
                           *, frac: float = 0.16,
                           x_offset: int = 0) -> None:
-    """Bottom 4-zone strip: PLAY/STOP | VOL− | volume | VOL+.
+    """Bottom strip: one full-width PLAY/STOP button.
 
-    The play/stop button toggles based on MPD state — when stopped it
-    plays the currently-selected station (or the first one if none has
-    been picked yet), when playing it stops everything. This is the
+    The button toggles based on MPD state — when stopped it plays the
+    currently-selected station (or the first one if none has been
+    picked yet), when playing it stops everything. This is the
     quick-access affordance: one tap to start the radio, one tap to
     stop, no menu navigation.
 
-    Play/stop is THE most common operation on the device, so it gets
-    the ergonomic priority: the footer is 16% of canvas height (was
-    10%) and the play zone the widest slice (30%), which together
-    roughly 2.5× the tap target. It also gets a heavier outline + halo
-    so it reads as the primary button over any map background.
+    The VOL−/volume/VOL+ zones that used to share this strip moved to
+    Settings → VOLUME: the speakers carry a physical volume knob, so
+    day-to-day loudness is adjusted there and the software mixer is a
+    set-and-forget trim. Play/stop — THE most common operation on the
+    device — inherits all of the freed width, so the same footer spot
+    is now one huge tap target whether it reads PLAY or STOP.
 
     `x_offset` lets callers reserve space at the left edge for an
-    alarm pill or other adornment — the four transport zones then
-    share `canvas_w - x_offset` instead of the full width.
+    alarm pill or other adornment — the button then spans
+    `canvas_w - x_offset` instead of the full width.
     """
     foot_h = int(canvas_h * frac)
     foot_y = canvas_h - foot_h
-    inner_w = canvas_w - x_offset
-    play_w = int(inner_w * 0.30)
-    minus_w = int(inner_w * 0.26)
-    readout_w = int(inner_w * 0.16)
-    plus_w = inner_w - play_w - minus_w - readout_w
 
     def play_label() -> str:
         return (_t("button.stop") if mpd_service.status.active
@@ -542,43 +538,17 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
         if sts:
             station_service.play(sts[0].id)
 
+    # Font sizes off min(w,h) = the footer height, so the extra width
+    # alone wouldn't grow the label — bump the factor too now that the
+    # widest translation has the whole strip to breathe in.
     scene.add(Button(
-        Rect(x_offset, foot_y, play_w, foot_h),
+        Rect(x_offset, foot_y, canvas_w - x_offset, foot_h),
         label_src=play_label,
         on_press=play_action,
-        font_factor=0.42,
+        font_factor=0.52,
         color_role="fg_bright",
         outline_width=3,
         halo=True,
-    ))
-    # VOL−/+ are repeatable so one tap = one small step (VOL_STEP) and a
-    # held press ramps the volume continuously. Per-tap was bumped down
-    # from 10 to 3 to give finer control near the comfortable bedside
-    # listening range; the hold-to-ramp behaviour keeps the bulk-change
-    # path fast enough that the smaller step doesn't feel sluggish.
-    scene.add(Button(
-        Rect(x_offset + play_w, foot_y, minus_w, foot_h),
-        label_src=lambda: _t("button.vol_down"),
-        on_press=lambda: mpd_service.command("vol_down"),
-        font_factor=0.42,
-        repeatable=True,
-    ))
-    scene.add(TextWidget(
-        Rect(x_offset + play_w + minus_w, foot_y, readout_w, foot_h),
-        # Hide the level when stopped — the number is irrelevant without
-        # audio. VOL−/+ still work and take effect on the next play.
-        text_src=lambda: (f"{mpd_service.status.volume}"
-                          if mpd_service.status.active else ""),
-        font_factor=0.55,
-        color_role="fg_dim",
-    ))
-    scene.add(Button(
-        Rect(x_offset + play_w + minus_w + readout_w,
-             foot_y, plus_w, foot_h),
-        label_src=lambda: _t("button.vol_up"),
-        on_press=lambda: mpd_service.command("vol_up"),
-        font_factor=0.42,
-        repeatable=True,
     ))
 
 
@@ -587,7 +557,7 @@ def _add_transport_footer(scene: "Scene", mpd_service, station_service,
 class IdleScene(Scene):
     """Default mode: a full-bleed map background with the clock
     floating on top, and a single transport footer below carrying the
-    alarm pill alongside PLAY / VOL controls.
+    alarm pill alongside a full-width PLAY/STOP button.
 
     No top header — the wifi glyph and date were dropped to give the
     map full vertical real estate. The alarm pill in the footer keeps
@@ -703,10 +673,10 @@ class IdleScene(Scene):
 
 
 class RadioScene(Scene):
-    """Radio-active mode: clock | station + title | PAUSE / STATIONS | vol.
+    """Radio-active mode: clock | station + title | PAUSE / STATIONS.
     Stream listening doesn't have prev/next semantics — the action row is
     PAUSE/PLAY plus a STATIONS button that re-opens the picker. Volume
-    lives in the always-available footer."""
+    lives in Settings → VOLUME (the speakers have a physical knob)."""
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor, mpd_service, station_service, alarm_service):
@@ -832,18 +802,14 @@ def _add_bt_transport_footer(scene: "Scene", bluetooth_service,
                              *, x_offset: int = 0,
                              frac: float = 0.16) -> None:
     """Variant of `_add_transport_footer` for the BluetoothPlayingScene.
-    Same 4-zone strip, but the leftmost button is DISCONNECT (drops the
-    phone link, leaves the pairing intact) instead of PLAY/STOP. Volume
-    keeps working — bluealsa-aplay shares the ALSA mixer with MPD, so
-    the same VOL−/+ buttons adjust the phone audio as they would adjust
-    the radio."""
+    Same full-width strip, but the button is DISCONNECT (drops the
+    phone link, leaves the pairing intact) instead of PLAY/STOP. The
+    volume zones moved to Settings → VOLUME with the main footer's —
+    bluealsa-aplay shares the ALSA mixer with MPD, so that one scene
+    (plus the speakers' physical knob) covers phone audio too."""
+    del mpd_service  # accepted for call-site back-compat, no longer drawn
     foot_h = int(canvas_h * frac)
     foot_y = canvas_h - foot_h
-    inner_w = canvas_w - x_offset
-    play_w = int(inner_w * 0.30)   # wider — "DISCONNECT" needs the room
-    minus_w = int(inner_w * 0.24)
-    readout_w = int(inner_w * 0.20)
-    plus_w = inner_w - play_w - minus_w - readout_w
 
     def _disconnect() -> None:
         # Find the streaming phone's MAC by walking the device list
@@ -859,36 +825,16 @@ def _add_bt_transport_footer(scene: "Scene", bluetooth_service,
                 return
         bluetooth_service.set_discoverable(False)
 
+    # 0.42 (not the main footer's 0.52): "DESCONECTAR" is much wider
+    # than PLAY/STOP and Button sizes off min(w,h) = footer height.
     scene.add(Button(
-        Rect(x_offset, foot_y, play_w, foot_h),
+        Rect(x_offset, foot_y, canvas_w - x_offset, foot_h),
         label_src=lambda: _t("bluetooth.button.disconnect"),
         on_press=_disconnect,
-        # Font sized against the widest translation ("DESCONECTAR") at
-        # the 16% footer height — Button sizes off min(w,h), which is
-        # now the height, so the old 0.36 overflowed the zone width.
-        font_factor=0.28,
+        font_factor=0.42,
         color_role="fg_bright",
-    ))
-    scene.add(Button(
-        Rect(x_offset + play_w, foot_y, minus_w, foot_h),
-        label_src=lambda: _t("button.vol_down"),
-        on_press=lambda: mpd_service.command("vol_down"),
-        font_factor=0.42,
-        repeatable=True,
-    ))
-    scene.add(TextWidget(
-        Rect(x_offset + play_w + minus_w, foot_y, readout_w, foot_h),
-        text_src=lambda: f"{mpd_service.status.volume}",
-        font_factor=0.55,
-        color_role="fg_dim",
-    ))
-    scene.add(Button(
-        Rect(x_offset + play_w + minus_w + readout_w,
-             foot_y, plus_w, foot_h),
-        label_src=lambda: _t("button.vol_up"),
-        on_press=lambda: mpd_service.command("vol_up"),
-        font_factor=0.42,
-        repeatable=True,
+        outline_width=3,
+        halo=True,
     ))
 
 
@@ -1385,14 +1331,14 @@ def _settings_tile_grid(scene: "Scene", canvas_w: int, canvas_h: int,
 class SettingsScene(Scene):
     """Overlay: top-level settings, presented as a 3×2 tile grid.
 
-    Six groups: WIFI · AUDIO · DISPLAY / LANGUAGE · DEMO · BLUETOOTH.
+    Six tiles: BLUETOOTH · WIFI · DISPLAY / LANGUAGE · DEMO · VOLUME.
     BLUETOOTH was promoted out of the old AUDIO sub-page because phone
     pairing is the most-tapped audio-related feature and deserved a
-    direct path; the AUDIO tile now opens the output picker straight
-    away (the only thing left under it). DISPLAY remains a sub-page
-    (theme/background/brightness — three leaves worth grouping). ABOUT
-    is reachable via a small ⓘ icon button in the header — kept for
-    diagnostics without occupying a full tile."""
+    direct path. DISPLAY remains a sub-page (theme/background/
+    brightness — three leaves worth grouping). VOLUME is the software
+    mixer level, demoted here off the home footer. ABOUT is reachable
+    via a small ⓘ icon button in the header — kept for diagnostics
+    without occupying a full tile."""
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
                  compositor):
@@ -1434,8 +1380,7 @@ class SettingsScene(Scene):
         # users keep their escape hatch.
         # BLUETOOTH leads — phone pairing is the most-tapped setting
         # (radio-as-speaker for music), so it gets the top-left slot
-        # where the eye lands first. The trailing empty cell shifts to
-        # the bottom-right of the 3×2 grid.
+        # where the eye lands first.
         tiles = [
             ((lambda: _t("settings.row.bluetooth")),
              lambda: compositor.set_overlay("bluetooth"),
@@ -1452,6 +1397,13 @@ class SettingsScene(Scene):
             ((lambda: _t("settings.row.demo")),
              lambda: compositor.set_overlay("demo_intro"),
              _adapt_settings_icon(SETTINGS_ICONS.get("play"))),
+            # VOLUME fills the formerly-empty sixth cell: the software
+            # mixer level was demoted off the home transport footer
+            # (the speakers have a physical knob for everyday loudness)
+            # and this scene is its new home.
+            ((lambda: _t("settings.row.volume")),
+             lambda: compositor.set_overlay("volume"),
+             _adapt_settings_icon(SETTINGS_ICONS.get("speaker"))),
         ]
         _settings_tile_grid(self, canvas_w, canvas_h, head_h,
                             tiles, cols=3, rows=2)
@@ -4804,6 +4756,69 @@ class BrightnessScene(Scene):
             label_src="+",
             on_press=plus,
             font_factor=0.55,
+        ))
+
+
+class VolumeScene(Scene):
+    """Settings → VOLUME: the software mixer level, demoted here off
+    the home transport footers. The connected speakers carry a physical
+    volume knob, so everyday loudness lives on the hardware; this scene
+    is the occasional trim of the software level underneath it (which
+    also sets the ceiling the alarm ramp climbs to). bluealsa-aplay
+    shares the ALSA mixer with MPD, so it covers phone audio too.
+
+    One huge readout + a VOL− / VOL+ pair sized for bedside fingers.
+    Buttons are repeatable — one tap is one small step (VOL_STEP), a
+    held press ramps continuously — matching the old footer feel."""
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 compositor, mpd_service):
+        super().__init__(theme, canvas_w, canvas_h)
+        head_h = int(canvas_h * 0.14)
+        self.add(_back_button(
+            canvas_w, head_h,
+            on_press=lambda: compositor.set_overlay("settings"),
+        ))
+        self.add(_home_button(canvas_w, head_h, compositor))
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.30), 0,
+                 int(canvas_w * 0.66), head_h),
+            text_src=lambda: _t("scene.volume.title"),
+            font_factor=0.55,
+            color_role="fg_dim",
+        ))
+
+        body_top = head_h + int(canvas_h * 0.04)
+        body_h = canvas_h - body_top - int(canvas_h * 0.06)
+        # Readout on top (always shown — unlike the old footer there's
+        # no ambiguity about what the number means here, and a change
+        # made while stopped simply takes effect on the next play),
+        # −/+ row below with the lion's share of the height.
+        val_h = int(body_h * 0.38)
+        self.add(TextWidget(
+            Rect(0, body_top, canvas_w, val_h),
+            text_src=lambda: f"{mpd_service.status.volume}",
+            font_factor=0.70,
+            color_role="fg_bright",
+        ))
+        ctl_y = body_top + val_h + int(body_h * 0.04)
+        ctl_h = body_h - val_h - int(body_h * 0.04)
+        margin = int(canvas_w * 0.06)
+        gap = int(canvas_w * 0.04)
+        btn_w = (canvas_w - 2 * margin - gap) // 2
+        self.add(Button(
+            Rect(margin, ctl_y, btn_w, ctl_h),
+            label_src=lambda: _t("button.vol_down"),
+            on_press=lambda: mpd_service.command("vol_down"),
+            font_factor=0.34,
+            repeatable=True,
+        ))
+        self.add(Button(
+            Rect(margin + btn_w + gap, ctl_y, btn_w, ctl_h),
+            label_src=lambda: _t("button.vol_up"),
+            on_press=lambda: mpd_service.command("vol_up"),
+            font_factor=0.34,
+            repeatable=True,
         ))
 
 

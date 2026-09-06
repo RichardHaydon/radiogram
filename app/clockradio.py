@@ -69,8 +69,8 @@ from scenes import (
     PodcastEpisodeListScene, PodcastListScene, PodcastSearchScene,
     PodcastUrlScene, QuickPanelScene, RadioHubScene, RadioScene,
     SettingsScene, StationListScene,
-    ThemeScene, VerseScene, WeatherLocationScene, WeatherScene,
-    WifiPasswordScene, WifiScene,
+    ThemeScene, VerseScene, VolumeScene, WeatherLocationScene,
+    WeatherScene, WifiPasswordScene, WifiScene,
 )
 
 
@@ -1104,6 +1104,10 @@ def main() -> int:
         mpd_service=mpd, i18n_service=i18n,
     )
     scenes["audio_output"] = AudioOutputScene(
+        theme, display.canvas_w, display.canvas_h,
+        compositor=compositor, mpd_service=mpd,
+    )
+    scenes["volume"] = VolumeScene(
         theme, display.canvas_w, display.canvas_h,
         compositor=compositor, mpd_service=mpd,
     )
