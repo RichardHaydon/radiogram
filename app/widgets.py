@@ -469,7 +469,8 @@ class WrappedTextWidget(Widget):
                  color_role: str = "fg_bright",
                  line_spacing: float = 1.30,
                  horizontal_pad: float = 0.04,
-                 paragraph_gap: float = 0.6):
+                 paragraph_gap: float = 0.6,
+                 min_font_size: int | None = None):
         super().__init__(rect)
         self._text_src = text_src
         self.font_role = font_role
@@ -478,6 +479,11 @@ class WrappedTextWidget(Widget):
         self.line_spacing = line_spacing
         self.pad = horizontal_pad
         self.paragraph_gap = paragraph_gap
+        # When set, render() steps the font down from font_size toward
+        # this floor until the wrapped block fits the rect height —
+        # for panels that share the screen and can't let a long verse
+        # spill past their bottom edge.
+        self.min_font_size = min_font_size
 
     def get_text(self) -> str:
         return (self._text_src() if callable(self._text_src)
@@ -490,7 +496,31 @@ class WrappedTextWidget(Widget):
         text = self.get_text()
         if not text:
             return
-        font = get_font(font_path(theme, self.font_role), self.font_size)
+        size = self.font_size
+        while True:
+            font = get_font(font_path(theme, self.font_role), size)
+            lines, line_h, gap_h = self._layout(draw, text, font)
+            total_h = sum(gap_h if not ln else line_h for ln in lines)
+            if (self.min_font_size is None or total_h <= self.rect.h
+                    or size <= self.min_font_size):
+                break
+            size = max(self.min_font_size, int(size * 0.92))
+        y = self.rect.y + max(0, (self.rect.h - total_h) // 2)
+        col = color(theme, self.color_role)
+        for ln in lines:
+            if not ln:
+                y += gap_h
+                continue
+            bbox = draw.textbbox((0, 0), ln, font=font)
+            line_w = bbox[2] - bbox[0]
+            x = self.rect.cx - line_w / 2
+            draw.text((x, y - bbox[1]), ln, font=font, fill=col)
+            y += line_h
+
+    def _layout(self, draw, text: str, font) -> tuple[list[str], int, int]:
+        """Wrap `text` to the rect width with `font`. Returns the lines
+        (empty string = paragraph spacer), the line height and the
+        paragraph-gap height."""
         max_w = int(self.rect.w * (1 - 2 * self.pad))
         lines: list[str] = []
         for para_idx, para in enumerate(text.split("\n\n")):
@@ -511,19 +541,7 @@ class WrappedTextWidget(Widget):
         ascent, descent = font.getmetrics()
         line_h = int((ascent + descent) * self.line_spacing)
         gap_h = int(line_h * self.paragraph_gap)
-        # Total height: real lines + smaller gaps where lines are empty.
-        total_h = sum(gap_h if not ln else line_h for ln in lines)
-        y = self.rect.y + max(0, (self.rect.h - total_h) // 2)
-        col = color(theme, self.color_role)
-        for ln in lines:
-            if not ln:
-                y += gap_h
-                continue
-            bbox = draw.textbbox((0, 0), ln, font=font)
-            line_w = bbox[2] - bbox[0]
-            x = self.rect.cx - line_w / 2
-            draw.text((x, y - bbox[1]), ln, font=font, fill=col)
-            y += line_h
+        return lines, line_h, gap_h
 
 
 class TwoLineText(Widget):

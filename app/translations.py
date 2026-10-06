@@ -148,6 +148,9 @@ EN: dict[str, str] = {
     "alarm.snz_short": "Snz",
     "alarm.skip_marker": "skip next",
     "alarm.imminent": "⏰ ALARM IN {time}",
+    "prealarm.hilo": "{hi}° / {lo}°",
+    "prealarm.now": "Now {temp}°C",
+    "prealarm.rain": "Rain {pct}%",
 
     # Day labels (alarm.days_label)
     "days.once": "once",
@@ -514,6 +517,9 @@ ES: dict[str, str] = {
     "alarm.snz_short": "Pos",
     "alarm.skip_marker": "omitir prox.",
     "alarm.imminent": "⏰ ALARMA EN {time}",
+    "prealarm.hilo": "{hi}° / {lo}°",
+    "prealarm.now": "Ahora {temp}°C",
+    "prealarm.rain": "Lluvia {pct}%",
 
     # Days
     "days.once": "una vez",
@@ -871,6 +877,9 @@ NO: dict[str, str] = {
     "alarm.snz_short": "Slm",
     "alarm.skip_marker": "hopp over neste",
     "alarm.imminent": "⏰ ALARM OM {time}",
+    "prealarm.hilo": "{hi}° / {lo}°",
+    "prealarm.now": "Na {temp}°C",
+    "prealarm.rain": "Regn {pct}%",
 
     # Days
     "days.once": "en gang",

@@ -496,6 +496,31 @@ def _add_skip_banner(scene: "Scene", alarm_service,
     ))
 
 
+def _today_line() -> str:
+    """Today's weekday + numeric date, e.g. "Tuesday · 9 May".
+    Uses the localised long weekday names from translations and
+    the system's `%-d %b` for the date (numeric day is universal;
+    month abbreviation falls back to the locale shipped with
+    the OS image, English on a stock Pi). Shared by WeatherScene and
+    PreAlarmScene."""
+    from datetime import date
+    try:
+        today = date.today()
+    except Exception:
+        return ""
+    wkey = ("day.long.mon", "day.long.tue", "day.long.wed",
+            "day.long.thu", "day.long.fri", "day.long.sat",
+            "day.long.sun")[today.weekday()]
+    weekday = _t(wkey)
+    # `%-d` is POSIX-only (Linux); on Windows we'd need %#d. Pi is
+    # Linux so this is safe. %b gives a 3-letter month abbreviation.
+    try:
+        datestr = today.strftime("%-d %b")
+    except ValueError:
+        datestr = today.strftime("%d %b").lstrip("0")
+    return f"{weekday}  ·  {datestr}"
+
+
 def _add_transport_footer(scene: "Scene", mpd_service, station_service,
                           canvas_w: int, canvas_h: int,
                           *, frac: float = 0.16,
@@ -995,6 +1020,172 @@ class BluetoothPlayingScene(Scene):
     def render(self) -> Image.Image:
         self._apply_clock_layout()
         return super().render()
+
+
+class PreAlarmScene(Scene):
+    """Wake-up screen for the PRE_ALARM_WINDOW_S before an alarm.
+
+    Replaces the home scene (and its world-map background) while the
+    countdown runs: the countdown + SKIP NEXT stay across the top so
+    averting the alarm is still one tap, and the body becomes the
+    morning briefing — today's forecast on the left, verse of the day
+    on the right. The PLAY/STOP footer stays so radio that's already
+    on can be stopped from here.
+
+    pick_scene() routes here only while _pre_alarm_seconds_left() is
+    non-negative, so tapping SKIP NEXT (which sets skip_next) drops
+    straight back to the normal home scene on the next frame.
+    """
+
+    def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
+                 alarm_service, mpd_service, station_service,
+                 weather_service, verse_service, compositor):
+        super().__init__(theme, canvas_w, canvas_h)
+        self._compositor = compositor
+        self._weather = weather_service
+        self._verse = verse_service
+
+        # Top band: clock · countdown · SKIP NEXT.
+        head_h = int(canvas_h * 0.20)
+        self.add(ClockWidget(
+            Rect(int(canvas_w * 0.01), 0, int(canvas_w * 0.24), head_h),
+            font_factor=0.50,
+        ))
+        # The shared banner string leads with a ⏰ that the panel fonts
+        # have no glyph for (renders as a box); drop it here.
+        self.add(TextWidget(
+            Rect(int(canvas_w * 0.25), 0, int(canvas_w * 0.47), head_h),
+            text_src=lambda: _format_pre_alarm_banner(
+                alarm_service).lstrip("⏰ "),
+            font_factor=0.36,
+            color_role="fg_accent",
+        ))
+        self.add(Button(
+            Rect(int(canvas_w * 0.73), int(head_h * 0.14),
+                 int(canvas_w * 0.25), int(head_h * 0.72)),
+            label_src=lambda: _format_skip_button(alarm_service),
+            on_press=lambda: alarm_service.toggle_skip_next(),
+            font_factor=0.40,
+            color_role="fg_accent",
+            outline_width=3,
+        ))
+
+        footer_frac = 0.14
+        body_y = head_h + int(canvas_h * 0.03)
+        body_h = (canvas_h - int(canvas_h * footer_frac)
+                  - int(canvas_h * 0.03) - body_y)
+
+        # Left panel: today's forecast.
+        wx_x = int(canvas_w * 0.02)
+        wx_w = int(canvas_w * 0.40)
+        y = body_y
+        h = int(body_h * 0.14)
+        self.add(TextWidget(
+            Rect(wx_x, y, wx_w, h), text_src=_today_line,
+            font_factor=0.60, color_role="fg_bright",
+        ))
+        y += h
+        h = int(body_h * 0.10)
+        self.add(TextWidget(
+            Rect(wx_x, y, wx_w, h), text_src=self._loc_line,
+            font_factor=0.60, font_role="regular", color_role="fg_dim",
+        ))
+        y += h
+        row_h = int(body_h * 0.50)
+        icon_w = int(wx_w * 0.40)
+        self.add(WeatherIconWidget(
+            Rect(wx_x, y, icon_w, row_h), code_src=self._today_code,
+        ))
+        txt_x = wx_x + icon_w
+        txt_w = wx_w - icon_w
+        self.add(TextWidget(
+            Rect(txt_x, y + int(row_h * 0.08), txt_w, int(row_h * 0.50)),
+            text_src=self._hilo_line,
+            font_factor=0.46, color_role="fg_accent",
+        ))
+        self.add(TextWidget(
+            Rect(txt_x, y + int(row_h * 0.60), txt_w, int(row_h * 0.32)),
+            text_src=self._cond_label,
+            font_factor=0.55, font_role="regular", color_role="fg_bright",
+        ))
+        y += row_h
+        self.add(TextWidget(
+            Rect(wx_x, y, wx_w, int(body_h * 0.18)),
+            text_src=self._now_rain_line,
+            font_factor=0.42, font_role="regular", color_role="fg_subtle",
+        ))
+
+        # Right panel: verse of the day.
+        vs_x = int(canvas_w * 0.45)
+        vs_w = canvas_w - vs_x - int(canvas_w * 0.02)
+        ref_h = int(body_h * 0.14)
+        self.add(TextWidget(
+            Rect(vs_x, body_y, vs_w, ref_h), text_src=self._ref_line,
+            font_factor=0.60, color_role="fg_accent",
+        ))
+        self.add(WrappedTextWidget(
+            Rect(vs_x, body_y + ref_h, vs_w, body_h - ref_h),
+            text_src=lambda: self._verse.status.text,
+            font_size=int(canvas_h * 0.050),
+            min_font_size=int(canvas_h * 0.030),
+            font_role="regular",
+            color_role="fg_bright",
+            line_spacing=1.25,
+        ))
+
+        _add_transport_footer(self, mpd_service, station_service,
+                              canvas_w, canvas_h, frac=footer_frac)
+
+    # --- weather text ------------------------------------------------
+
+    def _today(self):
+        days = self._weather.status.days
+        return days[0] if days else None
+
+    def _today_code(self) -> int:
+        d = self._today()
+        return d.code if d is not None else self._weather.status.cur_code
+
+    def _loc_line(self) -> str:
+        s = self._weather.status
+        if s.busy and not s.location:
+            return _t("weather.locating")
+        return s.location
+
+    def _hilo_line(self) -> str:
+        d = self._today()
+        if d is None:
+            return _t("misc.dash")
+        return _t("prealarm.hilo", hi=round(d.high_c), lo=round(d.low_c))
+
+    def _cond_label(self) -> str:
+        d = self._today()
+        if d is None:
+            return ""
+        from weather_service import label_for_code
+        return label_for_code(d.code)
+
+    def _now_rain_line(self) -> str:
+        s = self._weather.status
+        parts = []
+        if s.cur_temp_c is not None:
+            parts.append(_t("prealarm.now", temp=round(s.cur_temp_c)))
+        d = self._today()
+        if d is not None:
+            parts.append(_t("prealarm.rain", pct=d.precip_pct))
+        return "  ·  ".join(parts)
+
+    # --- verse text --------------------------------------------------
+
+    def _ref_line(self) -> str:
+        s = self._verse.status
+        if s.busy and not s.reference:
+            return _t("verse.loading")
+        return s.reference or _t("scene.verse.title")
+
+    def on_tap(self, cx: float, cy: float) -> bool:
+        self._compositor.set_overlay("launcher")
+        return True
 
 
 class LauncherScene(Scene):
@@ -2814,27 +3005,7 @@ class WeatherScene(Scene):
         return f"{loc}  ›"
 
     def _date_line(self) -> str:
-        """Today's weekday + numeric date, e.g. "Tuesday · 9 May".
-        Uses the localised long weekday names from translations and
-        the system's `%-d %b` for the date (numeric day is universal;
-        month abbreviation falls back to the locale shipped with
-        the OS image, English on a stock Pi)."""
-        from datetime import date
-        try:
-            today = date.today()
-        except Exception:
-            return ""
-        wkey = ("day.long.mon", "day.long.tue", "day.long.wed",
-                "day.long.thu", "day.long.fri", "day.long.sat",
-                "day.long.sun")[today.weekday()]
-        weekday = _t(wkey)
-        # `%-d` is POSIX-only (Linux); on Windows we'd need %#d. Pi is
-        # Linux so this is safe. %b gives a 3-letter month abbreviation.
-        try:
-            datestr = today.strftime("%-d %b")
-        except ValueError:
-            datestr = today.strftime("%d %b").lstrip("0")
-        return f"{weekday}  ·  {datestr}"
+        return _today_line()
 
     def _temp_line(self) -> str:
         s = self._weather.status

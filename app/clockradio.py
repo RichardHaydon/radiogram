@@ -67,7 +67,8 @@ from scenes import (
     DemoIntroScene, DemoSplashScene, DisplaySettingsScene,
     IdleScene, LanguageScene, LauncherScene, MapCenterScene,
     PodcastEpisodeListScene, PodcastListScene, PodcastSearchScene,
-    PodcastUrlScene, QuickPanelScene, RadioHubScene, RadioScene,
+    PodcastUrlScene, PreAlarmScene, QuickPanelScene, RadioHubScene,
+    RadioScene,
     SettingsScene, StationListScene,
     ThemeScene, VerseScene, VolumeScene, WeatherLocationScene,
     WeatherScene, WifiPasswordScene, WifiScene,
@@ -966,6 +967,12 @@ def main() -> int:
     def pick_scene() -> str:
         if alarms.firing:
             return "alarm"
+        # Last minutes before an alarm: the wake-up screen (countdown +
+        # SKIP NEXT over today's forecast and verse) replaces whichever
+        # home variant would otherwise show. Skipping sets skip_next,
+        # which closes the window and drops back to the normal home.
+        if _scenes_mod._pre_alarm_seconds_left(alarms) >= 0:
+            return "pre_alarm"
         # An active BT stream (or the phone's AVRCP reporting Playing
         # even if the A2DP route is still settling) takes precedence
         # over the radio
@@ -999,6 +1006,12 @@ def main() -> int:
         theme, display.canvas_w, display.canvas_h,
         alarm_service=alarms, mpd_service=mpd,
         bluetooth_service=bluetooth, compositor=compositor,
+    )
+    scenes["pre_alarm"] = PreAlarmScene(
+        theme, display.canvas_w, display.canvas_h,
+        alarm_service=alarms, mpd_service=mpd,
+        station_service=stations, weather_service=weather,
+        verse_service=verse, compositor=compositor,
     )
     # Idle + Radio + the alarm-firing scene opt in to the world map
     # background. Alarm-firing inherits because the user wanted the
@@ -1262,6 +1275,12 @@ def main() -> int:
             pre_alarm_now = bool(
                 _scenes_mod._pre_alarm_seconds_left(alarms) >= 0)
             if pre_alarm_now and not prev_pre_alarm:
+                # The wake-up screen shows today's forecast + verse.
+                # VerseService only fetches on request (cached per day)
+                # and the weather poll may be up to 15 min old, so kick
+                # both now; the screen fills in within a second or two.
+                verse.refresh()
+                weather.refresh()
                 last_input_t = time.monotonic()
                 current_b = float(active_b)
                 current_rgb = list(active_rgb)
