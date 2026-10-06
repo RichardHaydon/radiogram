@@ -148,7 +148,11 @@ LIGHT_LOG_PATH = Path("/var/lib/clockradio/light-log.csv")
 BACKGROUND_PATH = Path("/var/lib/clockradio/background.json")
 LANGUAGE_PATH = Path("/var/lib/clockradio/language.json")
 # Default alarm sound. Slice 3c will add chime fallback for offline.
-ALARM_URL = "https://nwm.streamguys1.com/faith/playlist.m3u8"
+# Direct Icecast AAC, not the HLS playlist.m3u8: MPD's ffmpeg HLS
+# reader often stalls on this server (sequence resets to 0 per
+# session) and plays silence while showing the station + bitrate,
+# and blocks STOP until its network read times out.
+ALARM_URL = "https://nwm.streamguys1.com/faith-aac"
 
 
 # =====================================================================

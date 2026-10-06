@@ -26,9 +26,13 @@ class Station:
 
 # Bundled seed — only stations the user has explicitly provided.
 DEFAULT_SEED: list[Station] = [
+    # Direct Icecast AAC, not the HLS playlist.m3u8: MPD's ffmpeg HLS
+    # reader often stalls on this server (sequence resets to 0 per
+    # session) and plays silence while showing the station + bitrate,
+    # and blocks STOP until its network read times out.
     Station(id="myfaithradio",
             name="MyFaith Radio",
-            url="https://nwm.streamguys1.com/faith/playlist.m3u8"),
+            url="https://nwm.streamguys1.com/faith-aac"),
 ]
 
 
