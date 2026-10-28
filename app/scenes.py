@@ -354,6 +354,13 @@ def _format_footer_alarm(alarm_service) -> str:
 # the bed for ages obscuring the clock.
 PRE_ALARM_WINDOW_S = 5 * 60
 
+# One shared fraction for the bottom transport strip so every home
+# variant reserves the same space. 0.22 (up from 0.16): PLAY/STOP is
+# the most-used control on the device and the old strip was fiddly
+# for a sleepy finger — the taller strip grows both the hit target
+# and the label (Button font sizes off the strip height).
+TRANSPORT_FOOTER_FRAC = 0.22
+
 
 def _pre_alarm_seconds_left(alarm_service) -> int:
     """Seconds until the next-to-fire alarm goes off, or -1 if no
@@ -417,7 +424,9 @@ def _add_pre_alarm_banner(scene: "Scene", alarm_service,
     card_w = int(canvas_w * 0.86)
     card_x = (canvas_w - card_w) // 2
     text_h = int(canvas_h * 0.18)
-    btn_h = int(canvas_h * 0.22)
+    # 0.28 (up from 0.22): the SKIP target is pressed half-asleep, so
+    # it gets the same "can't miss it" treatment as the transport strip.
+    btn_h = int(canvas_h * 0.28)
     gap = int(canvas_h * 0.02)
     block_h = text_h + gap + btn_h
     text_y = (canvas_h - block_h) // 2
@@ -523,7 +532,7 @@ def _today_line() -> str:
 
 def _add_transport_footer(scene: "Scene", mpd_service, station_service,
                           canvas_w: int, canvas_h: int,
-                          *, frac: float = 0.16,
+                          *, frac: float = TRANSPORT_FOOTER_FRAC,
                           x_offset: int = 0) -> None:
     """Bottom strip: one full-width PLAY/STOP button.
 
@@ -601,7 +610,7 @@ class IdleScene(Scene):
 
         # Footer height must match _add_transport_footer's frac so the
         # alarm pill and the transport zones sit on the same strip.
-        footer_h = int(canvas_h * 0.16)
+        footer_h = int(canvas_h * TRANSPORT_FOOTER_FRAC)
         body_h = canvas_h - footer_h
 
         # Big clock floating over the map, vertically centred in the
@@ -637,16 +646,17 @@ class IdleScene(Scene):
         bell_size = int(footer_h * 0.55)
         bell_x = int(canvas_w * 0.025)
         # fg_bright + halo so the time reads cleanly over the world
-        # map. Font factor is tuned against the tallest label the pill
-        # can carry ("07:00 SKIP" / "SNZ 07:09") so nothing truncates
-        # at the 16% footer height.
+        # map. Font factor is tuned against the widest label the pill
+        # can carry ("No alarm" / "SNZ 07:09") so nothing truncates —
+        # the strip got taller (TRANSPORT_FOOTER_FRAC) but the pill's
+        # WIDTH didn't grow, so the factor dropped from 0.44 with it.
         self.add(Button(
             Rect(bell_x, foot_y, alarm_w - bell_x, footer_h),
             label_src=lambda: _format_footer_alarm(alarm_service),
             on_press=lambda: compositor.set_overlay("alarm_list"),
             outline_width=0,
             color_role="fg_bright",
-            font_factor=0.44,
+            font_factor=0.34,
             halo=True,
         ))
         self.add(BellIconWidget(
@@ -707,13 +717,13 @@ class RadioScene(Scene):
                  compositor, mpd_service, station_service, alarm_service):
         super().__init__(theme, canvas_w, canvas_h)
         self._compositor = compositor
-        # Reserve the bottom 16% for the transport footer (added
-        # below — its enlarged STOP is the primary way off this
-        # scene). In the rest give the clock more room (45%),
+        # Reserve the bottom TRANSPORT_FOOTER_FRAC for the transport
+        # footer (added below — its enlarged STOP is the primary way
+        # off this scene). In the rest give the clock more room (45%),
         # now-playing band moderate (33%), action row trim (22%) —
         # the always-on transport footer covers play/stop, so
         # PAUSE/STATIONS up here don't need to be huge.
-        usable_h = int(canvas_h * 0.84)
+        usable_h = int(canvas_h * (1.0 - TRANSPORT_FOOTER_FRAC))
         clock_h = int(usable_h * 0.45)
         np_h = int(usable_h * 0.33)
         action_h = usable_h - clock_h - np_h
@@ -781,13 +791,13 @@ class RadioScene(Scene):
             Rect(0, bot_y, half, action_h),
             label_src=play_label,
             on_press=lambda: mpd_service.command("toggle"),
-            font_factor=0.32,
+            font_factor=0.40,
         ))
         self.add(Button(
             Rect(half, bot_y, canvas_w - half, action_h),
             label_src=lambda: _t("button.stations"),
             on_press=lambda: compositor.set_overlay("station_list"),
-            font_factor=0.32,
+            font_factor=0.40,
         ))
         _add_transport_footer(self, mpd_service, station_service,
                               canvas_w, canvas_h)
@@ -825,7 +835,7 @@ class RadioScene(Scene):
 def _add_bt_transport_footer(scene: "Scene", bluetooth_service,
                              mpd_service, canvas_w: int, canvas_h: int,
                              *, x_offset: int = 0,
-                             frac: float = 0.16) -> None:
+                             frac: float = TRANSPORT_FOOTER_FRAC) -> None:
     """Variant of `_add_transport_footer` for the BluetoothPlayingScene.
     Same full-width strip, but the button is DISCONNECT (drops the
     phone link, leaves the pairing intact) instead of PLAY/STOP. The
@@ -883,7 +893,7 @@ class BluetoothPlayingScene(Scene):
 
         # Matches _add_bt_transport_footer's frac (same reasoning as
         # IdleScene — pill and transport share one strip).
-        footer_h = int(canvas_h * 0.16)
+        footer_h = int(canvas_h * TRANSPORT_FOOTER_FRAC)
         body_h = canvas_h - footer_h
 
         # Clock at the top — same alt-layout dance as IdleScene so
@@ -947,7 +957,7 @@ class BluetoothPlayingScene(Scene):
             on_press=lambda: compositor.set_overlay("alarm_list"),
             outline_width=0,
             color_role="fg_bright",
-            font_factor=0.44,
+            font_factor=0.34,
             halo=True,
         ))
         self.add(BellIconWidget(
@@ -1026,15 +1036,29 @@ class PreAlarmScene(Scene):
     """Wake-up screen for the PRE_ALARM_WINDOW_S before an alarm.
 
     Replaces the home scene (and its world-map background) while the
-    countdown runs: the countdown + SKIP NEXT stay across the top so
-    averting the alarm is still one tap, and the body becomes the
+    countdown runs: countdown across the top, and the body becomes the
     morning briefing — today's forecast on the left, verse of the day
-    on the right. The PLAY/STOP footer stays so radio that's already
-    on can be stopped from here.
+    on the right.
+
+    The ENTIRE SCREEN is the cancel affordance: any touch, anywhere,
+    skips the pending alarm (or cancels a pending snooze re-fire).
+    The old top-right SKIP NEXT button was too small to hit reliably
+    with a sleepy finger, and there is nothing else a user plausibly
+    wants to do on this screen in the final minutes — so the whole
+    panel is the button. A hint band at the bottom (where the
+    transport footer used to be) says so. The PLAY/STOP footer was
+    dropped for the same reason: a touch here must never do anything
+    but avert the alarm, and the normal home footer is one tap away
+    once the countdown closes.
+
+    The scene is also constructed with the LIGHT theme (see
+    clockradio.main) rather than the user's bedside theme: the panel
+    going bright cream acts as a visual early warning that the alarm
+    is imminent, distinct from every dark night-time screen.
 
     pick_scene() routes here only while _pre_alarm_seconds_left() is
-    non-negative, so tapping SKIP NEXT (which sets skip_next) drops
-    straight back to the normal home scene on the next frame.
+    non-negative, so the cancelling touch drops straight back to the
+    normal home scene on the next frame.
     """
 
     def __init__(self, theme: Theme, canvas_w: int, canvas_h: int, *,
@@ -1044,8 +1068,12 @@ class PreAlarmScene(Scene):
         self._compositor = compositor
         self._weather = weather_service
         self._verse = verse_service
+        self._alarms = alarm_service
 
-        # Top band: clock · countdown · SKIP NEXT.
+        # Top band: clock · countdown. The countdown gets all the width
+        # the old SKIP NEXT button occupied — cancelling is now the
+        # whole screen, so the band's job is purely "how long until it
+        # fires", as large as the band allows.
         head_h = int(canvas_h * 0.20)
         self.add(ClockWidget(
             Rect(int(canvas_w * 0.01), 0, int(canvas_w * 0.24), head_h),
@@ -1054,20 +1082,11 @@ class PreAlarmScene(Scene):
         # The shared banner string leads with a ⏰ that the panel fonts
         # have no glyph for (renders as a box); drop it here.
         self.add(TextWidget(
-            Rect(int(canvas_w * 0.25), 0, int(canvas_w * 0.47), head_h),
+            Rect(int(canvas_w * 0.25), 0, int(canvas_w * 0.73), head_h),
             text_src=lambda: _format_pre_alarm_banner(
                 alarm_service).lstrip("⏰ "),
-            font_factor=0.36,
+            font_factor=0.45,
             color_role="fg_accent",
-        ))
-        self.add(Button(
-            Rect(int(canvas_w * 0.73), int(head_h * 0.14),
-                 int(canvas_w * 0.25), int(head_h * 0.72)),
-            label_src=lambda: _format_skip_button(alarm_service),
-            on_press=lambda: alarm_service.toggle_skip_next(),
-            font_factor=0.40,
-            color_role="fg_accent",
-            outline_width=3,
         ))
 
         footer_frac = 0.14
@@ -1133,8 +1152,27 @@ class PreAlarmScene(Scene):
             line_spacing=1.25,
         ))
 
-        _add_transport_footer(self, mpd_service, station_service,
-                              canvas_w, canvas_h, frac=footer_frac)
+        # mpd/station services are accepted for call-site back-compat
+        # but the PLAY/STOP footer they fed is gone — any touch on this
+        # scene cancels the alarm instead (see class docstring).
+        del mpd_service, station_service
+
+        # Bottom hint band where the footer used to sit. It's a Button
+        # purely for the visual affordance (outline + press feedback);
+        # taps everywhere else land in on_tap and do the same thing.
+        hint_h = int(canvas_h * footer_frac)
+        self.add(Button(
+            Rect(int(canvas_w * 0.02), canvas_h - hint_h,
+                 int(canvas_w * 0.96), hint_h),
+            label_src=lambda: _t("prealarm.touch_hint"),
+            on_press=self._cancel,
+            font_factor=0.38,
+            color_role="fg_accent",
+            outline_width=3,
+        ))
+
+    def _cancel(self) -> None:
+        self._alarms.cancel_pending()
 
     # --- weather text ------------------------------------------------
 
@@ -1184,7 +1222,11 @@ class PreAlarmScene(Scene):
         return s.reference or _t("scene.verse.title")
 
     def on_tap(self, cx: float, cy: float) -> bool:
-        self._compositor.set_overlay("launcher")
+        # Any touch cancels the imminent alarm — the whole screen is
+        # the skip button (see class docstring). pick_scene() stops
+        # routing here the moment the countdown clears, so the user
+        # lands back on the normal home scene on the next frame.
+        self._cancel()
         return True
 
 
@@ -1327,7 +1369,7 @@ class RadioHubScene(Scene):
         # AppTile (icon + label) reuses the launcher visual language —
         # users already know what a tile means here. Footer height
         # matches _add_transport_footer's frac.
-        footer_h = int(canvas_h * 0.16)
+        footer_h = int(canvas_h * TRANSPORT_FOOTER_FRAC)
         cards_top = np_y + np_h + int(canvas_h * 0.015)
         cards_bot = canvas_h - footer_h - int(canvas_h * 0.015)
         cards_h = cards_bot - cards_top
@@ -4613,8 +4655,10 @@ class AlarmFiringScene(Scene):
         super().__init__(theme, canvas_w, canvas_h)
 
         # Bottom band carries the STOP button; clock + bell label
-        # share the upper area, vertically centred.
-        btn_h = int(canvas_h * 0.22)
+        # share the upper area, vertically centred. 0.28 (up from
+        # 0.22) — stopping the alarm is the one action this screen
+        # exists for, so the target gets transport-strip sizing.
+        btn_h = int(canvas_h * 0.28)
         body_h = canvas_h - btn_h
 
         # Big clock in the upper portion, halo'd so it pops cleanly

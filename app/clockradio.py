@@ -52,7 +52,7 @@ from podcast_service import PodcastService
 from podcasts import PodcastStore
 from station_service import StationService
 from stations import StationStore
-from theme import THEMES
+from theme import LIGHT, THEMES
 from theme_service import ThemeProxy, ThemeService
 from verse_service import VerseService
 from weather_service import WeatherService
@@ -1007,8 +1007,13 @@ def main() -> int:
         alarm_service=alarms, mpd_service=mpd,
         bluetooth_service=bluetooth, compositor=compositor,
     )
+    # The pre-alarm scene deliberately gets the fixed LIGHT theme
+    # instead of the user's ThemeProxy: the panel flipping to a bright
+    # cream page is the early-warning signal that an alarm is about to
+    # fire — unmistakable next to the dark bedside themes, and visible
+    # from across the room without reading anything.
     scenes["pre_alarm"] = PreAlarmScene(
-        theme, display.canvas_w, display.canvas_h,
+        LIGHT, display.canvas_w, display.canvas_h,
         alarm_service=alarms, mpd_service=mpd,
         station_service=stations, weather_service=weather,
         verse_service=verse, compositor=compositor,

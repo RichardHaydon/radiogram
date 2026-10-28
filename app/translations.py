@@ -151,6 +151,7 @@ EN: dict[str, str] = {
     "prealarm.hilo": "{hi}° / {lo}°",
     "prealarm.now": "Now {temp}°C",
     "prealarm.rain": "Rain {pct}%",
+    "prealarm.touch_hint": "TOUCH ANYWHERE TO SKIP",
 
     # Day labels (alarm.days_label)
     "days.once": "once",
@@ -520,6 +521,7 @@ ES: dict[str, str] = {
     "prealarm.hilo": "{hi}° / {lo}°",
     "prealarm.now": "Ahora {temp}°C",
     "prealarm.rain": "Lluvia {pct}%",
+    "prealarm.touch_hint": "TOCA PARA OMITIR",
 
     # Days
     "days.once": "una vez",
@@ -880,6 +882,7 @@ NO: dict[str, str] = {
     "prealarm.hilo": "{hi}° / {lo}°",
     "prealarm.now": "Na {temp}°C",
     "prealarm.rain": "Regn {pct}%",
+    "prealarm.touch_hint": "TRYKK FOR A DROPPE",
 
     # Days
     "days.once": "en gang",

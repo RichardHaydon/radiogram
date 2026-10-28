@@ -102,6 +102,29 @@ class AlarmService:
             self._store.save(self._alarms)
         return new_flag
 
+    def cancel_pending(self) -> None:
+        """Cancel whatever the pre-alarm countdown is counting toward:
+        a pending snooze re-fire if one is set, otherwise skip the
+        next-to-fire alarm. Unlike toggle_skip_next this is one-way —
+        it's wired to the whole-screen touch on PreAlarmScene, where a
+        second accidental tap must never re-arm the alarm."""
+        if self._snooze_until is not None:
+            self._snooze_until = None
+            self._snooze_alarm = None
+            print("pre-alarm touch: snooze cancelled", flush=True)
+            return
+        nf = self.next_to_fire()
+        if nf is None:
+            return
+        target_id = nf[0].id
+        with self._lock:
+            for a in self._alarms:
+                if a.id == target_id and not a.skip_next:
+                    a.skip_next = True
+                    print(f"pre-alarm touch: skipping "
+                          f"{a.hour:02d}:{a.minute:02d}", flush=True)
+            self._store.save(self._alarms)
+
     def upsert_alarm(self, a: Alarm) -> None:
         """Insert a new alarm or replace an existing one (matched by id).
         Clears any stale last_fired entry so an edited time is not blocked
